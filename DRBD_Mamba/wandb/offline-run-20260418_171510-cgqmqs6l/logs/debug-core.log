@@ -1,0 +1,14 @@
+{"time":"2026-04-18T17:15:10.438230751+07:00","level":"INFO","msg":"main: starting server","port-filename":"/home/cuc.buithi/tmp/tmp_72z8zt4/port-2684692.txt","pid":2684692,"detached":false,"idle-timeout":600000000000,"log-level":0,"disable-analytics":false,"shutdown-on-parent-exit":false,"enable-dcgm-profiling":false}
+{"time":"2026-04-18T17:15:10.439042743+07:00","level":"INFO","msg":"server: accepting connections","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684692-2684704-2229923462/socket","Net":"unix"}}
+{"time":"2026-04-18T17:15:10.439098028+07:00","level":"INFO","msg":"server: will exit if parent process dies","ppid":2684692}
+{"time":"2026-04-18T17:15:10.627593479+07:00","level":"INFO","msg":"connection: ManageConnectionData: new connection created","id":"1(@)"}
+{"time":"2026-04-18T17:15:10.633876132+07:00","level":"INFO","msg":"handleInformInit: received","streamId":"cgqmqs6l","id":"1(@)"}
+{"time":"2026-04-18T17:15:10.756886999+07:00","level":"INFO","msg":"handleInformInit: stream started","streamId":"cgqmqs6l","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.504209345+07:00","level":"INFO","msg":"handleInformTeardown: server teardown initiated","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.504323008+07:00","level":"INFO","msg":"server is shutting down"}
+{"time":"2026-04-18T17:15:11.504598625+07:00","level":"INFO","msg":"connection: closing","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.504642408+07:00","level":"INFO","msg":"connection: closed successfully","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.504801127+07:00","level":"INFO","msg":"server: listener closed","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684692-2684704-2229923462/socket","Net":"unix"}}
+{"time":"2026-04-18T17:15:11.505355922+07:00","level":"INFO","msg":"handleInformTeardown: server shutdown complete","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.505366576+07:00","level":"INFO","msg":"connection: ManageConnectionData: connection closed","id":"1(@)"}
+{"time":"2026-04-18T17:15:11.505371776+07:00","level":"INFO","msg":"server is closed"}

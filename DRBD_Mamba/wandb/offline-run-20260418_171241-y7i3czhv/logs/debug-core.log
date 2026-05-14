@@ -1,0 +1,14 @@
+{"time":"2026-04-18T17:12:41.301184944+07:00","level":"INFO","msg":"main: starting server","port-filename":"/home/cuc.buithi/tmp/tmpzwp8o4a_/port-2684589.txt","pid":2684589,"detached":false,"idle-timeout":600000000000,"log-level":0,"disable-analytics":false,"shutdown-on-parent-exit":false,"enable-dcgm-profiling":false}
+{"time":"2026-04-18T17:12:41.30195821+07:00","level":"INFO","msg":"server: will exit if parent process dies","ppid":2684589}
+{"time":"2026-04-18T17:12:41.30195866+07:00","level":"INFO","msg":"server: accepting connections","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684589-2684610-1448261355/socket","Net":"unix"}}
+{"time":"2026-04-18T17:12:41.490658589+07:00","level":"INFO","msg":"connection: ManageConnectionData: new connection created","id":"1(@)"}
+{"time":"2026-04-18T17:12:41.497314493+07:00","level":"INFO","msg":"handleInformInit: received","streamId":"y7i3czhv","id":"1(@)"}
+{"time":"2026-04-18T17:12:41.619058993+07:00","level":"INFO","msg":"handleInformInit: stream started","streamId":"y7i3czhv","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.568656716+07:00","level":"INFO","msg":"handleInformTeardown: server teardown initiated","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.568965726+07:00","level":"INFO","msg":"connection: closing","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.569110081+07:00","level":"INFO","msg":"connection: closed successfully","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.569120664+07:00","level":"INFO","msg":"server is shutting down"}
+{"time":"2026-04-18T17:12:59.570093774+07:00","level":"INFO","msg":"server: listener closed","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684589-2684610-1448261355/socket","Net":"unix"}}
+{"time":"2026-04-18T17:12:59.570483203+07:00","level":"INFO","msg":"handleInformTeardown: server shutdown complete","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.570493909+07:00","level":"INFO","msg":"connection: ManageConnectionData: connection closed","id":"1(@)"}
+{"time":"2026-04-18T17:12:59.57049871+07:00","level":"INFO","msg":"server is closed"}

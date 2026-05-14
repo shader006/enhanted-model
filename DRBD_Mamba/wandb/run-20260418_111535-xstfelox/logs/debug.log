@@ -1,0 +1,32 @@
+2026-04-18 11:15:35,581 INFO    MainThread:2678690 [wandb_setup.py:_flush():81] Current SDK version is 0.26.0
+2026-04-18 11:15:35,581 INFO    MainThread:2678690 [wandb_setup.py:_flush():81] Configure stats pid to 2678690
+2026-04-18 11:15:35,581 INFO    MainThread:2678690 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-04-18 11:15:35,581 INFO    MainThread:2678690 [wandb_init.py:setup_run_log_directory():721] Logging user logs to /home/cuc.buithi/BRATS/BRATS23/DRBD_Mamba/wandb/run-20260418_111535-xstfelox/logs/debug.log
+2026-04-18 11:15:35,582 INFO    MainThread:2678690 [wandb_init.py:setup_run_log_directory():722] Logging internal logs to /home/cuc.buithi/BRATS/BRATS23/DRBD_Mamba/wandb/run-20260418_111535-xstfelox/logs/debug-internal.log
+2026-04-18 11:15:35,582 INFO    MainThread:2678690 [wandb_init.py:init():848] calling init triggers
+2026-04-18 11:15:35,582 INFO    MainThread:2678690 [wandb_init.py:init():853] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2026-04-18 11:15:35,582 INFO    MainThread:2678690 [wandb_init.py:init():896] starting backend
+2026-04-18 11:15:35,820 INFO    MainThread:2678690 [wandb_init.py:init():911] sending inform_init request
+2026-04-18 11:15:35,827 INFO    MainThread:2678690 [wandb_init.py:init():919] backend started and connected
+2026-04-18 11:15:35,829 INFO    MainThread:2678690 [wandb_init.py:init():989] updated telemetry
+2026-04-18 11:15:35,888 INFO    MainThread:2678690 [wandb_init.py:init():1013] communicating run to backend with 90.0 second timeout
+2026-04-18 11:15:47,828 WARNING MainThread:2678690 [wandb_init.py:init():1603] [no run ID] interrupted
+Traceback (most recent call last):
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1594, in init
+    run = wi.init(run_settings, run_config, run_printer)
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1024, in init
+    result = wait_with_progress(
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 24, in wait_with_progress
+    return wait_all_with_progress(
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 78, in wait_all_with_progress
+    return asyncer.run(progress_loop_with_timeout)
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/site-packages/wandb/sdk/lib/asyncio_manager.py", line 137, in run
+    return future.result()
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/concurrent/futures/_base.py", line 453, in result
+    self._condition.wait(timeout)
+  File "/home/cuc.buithi/miniconda3/envs/brats23/lib/python3.10/threading.py", line 320, in wait
+    waiter.acquire()
+KeyboardInterrupt
+2026-04-18 11:15:47,858 INFO    wandb-AsyncioManager-main:2678690 [service_client.py:_forward_responses():134] Reached EOF.
+2026-04-18 11:15:47,858 INFO    wandb-AsyncioManager-main:2678690 [mailbox.py:close():155] Closing mailbox, abandoning 2 handles.

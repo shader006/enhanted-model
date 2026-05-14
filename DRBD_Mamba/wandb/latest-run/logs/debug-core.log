@@ -1,0 +1,14 @@
+{"time":"2026-04-18T17:23:50.986362829+07:00","level":"INFO","msg":"main: starting server","port-filename":"/home/cuc.buithi/tmp/tmprm417vs7/port-2684890.txt","pid":2684890,"detached":false,"idle-timeout":600000000000,"log-level":0,"disable-analytics":false,"shutdown-on-parent-exit":false,"enable-dcgm-profiling":false}
+{"time":"2026-04-18T17:23:50.987227522+07:00","level":"INFO","msg":"server: accepting connections","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684890-2684903-1631337730/socket","Net":"unix"}}
+{"time":"2026-04-18T17:23:50.987283927+07:00","level":"INFO","msg":"server: will exit if parent process dies","ppid":2684890}
+{"time":"2026-04-18T17:23:51.176062852+07:00","level":"INFO","msg":"connection: ManageConnectionData: new connection created","id":"1(@)"}
+{"time":"2026-04-18T17:23:51.183490892+07:00","level":"INFO","msg":"handleInformInit: received","streamId":"dvjbsifg","id":"1(@)"}
+{"time":"2026-04-18T17:23:51.306106167+07:00","level":"INFO","msg":"handleInformInit: stream started","streamId":"dvjbsifg","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.023070781+07:00","level":"INFO","msg":"handleInformTeardown: server teardown initiated","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.023302585+07:00","level":"INFO","msg":"server is shutting down"}
+{"time":"2026-04-18T19:05:10.023395164+07:00","level":"INFO","msg":"connection: closing","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.023445136+07:00","level":"INFO","msg":"connection: closed successfully","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.024145363+07:00","level":"INFO","msg":"handleInformTeardown: server shutdown complete","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.024159782+07:00","level":"INFO","msg":"connection: ManageConnectionData: connection closed","id":"1(@)"}
+{"time":"2026-04-18T19:05:10.024188741+07:00","level":"INFO","msg":"server: listener closed","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684890-2684903-1631337730/socket","Net":"unix"}}
+{"time":"2026-04-18T19:05:10.024208244+07:00","level":"INFO","msg":"server is closed"}

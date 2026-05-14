@@ -1,0 +1,14 @@
+{"time":"2026-04-18T17:07:48.098008014+07:00","level":"INFO","msg":"main: starting server","port-filename":"/home/cuc.buithi/tmp/tmpp7zere2a/port-2684505.txt","pid":2684505,"detached":false,"idle-timeout":600000000000,"log-level":0,"disable-analytics":false,"shutdown-on-parent-exit":false,"enable-dcgm-profiling":false}
+{"time":"2026-04-18T17:07:48.098980768+07:00","level":"INFO","msg":"server: accepting connections","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684505-2684518-1528473773/socket","Net":"unix"}}
+{"time":"2026-04-18T17:07:48.09903574+07:00","level":"INFO","msg":"server: will exit if parent process dies","ppid":2684505}
+{"time":"2026-04-18T17:07:48.287175464+07:00","level":"INFO","msg":"connection: ManageConnectionData: new connection created","id":"1(@)"}
+{"time":"2026-04-18T17:07:48.294594841+07:00","level":"INFO","msg":"handleInformInit: received","streamId":"qjbbmal3","id":"1(@)"}
+{"time":"2026-04-18T17:07:48.416080966+07:00","level":"INFO","msg":"handleInformInit: stream started","streamId":"qjbbmal3","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.269150424+07:00","level":"INFO","msg":"handleInformTeardown: server teardown initiated","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.269274858+07:00","level":"INFO","msg":"server is shutting down"}
+{"time":"2026-04-18T17:07:49.269548147+07:00","level":"INFO","msg":"connection: closing","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.269578574+07:00","level":"INFO","msg":"connection: closed successfully","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.269639232+07:00","level":"INFO","msg":"server: listener closed","addr":{"Name":"/home/cuc.buithi/tmp/wandb-2684505-2684518-1528473773/socket","Net":"unix"}}
+{"time":"2026-04-18T17:07:49.269995683+07:00","level":"INFO","msg":"handleInformTeardown: server shutdown complete","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.270007068+07:00","level":"INFO","msg":"connection: ManageConnectionData: connection closed","id":"1(@)"}
+{"time":"2026-04-18T17:07:49.270012445+07:00","level":"INFO","msg":"server is closed"}
