@@ -1,0 +1,37 @@
+{
+  "data_dir": "SegMamba/data/fullres/train",
+  "cases": [
+    "BraTS2021_00000.npz",
+    "BraTS2021_00002.npz",
+    "BraTS2021_00003.npz",
+    "BraTS2021_00005.npz",
+    "BraTS2021_00006.npz",
+    "BraTS2021_00008.npz",
+    "BraTS2021_00009.npz",
+    "BraTS2021_00011.npz",
+    "BraTS2021_00012.npz",
+    "BraTS2021_00014.npz"
+  ],
+  "results": [
+    {
+      "label": "batch crop open memmap B=2",
+      "n": 10,
+      "mean_ms": 25.0596834695898,
+      "median_ms": 25.93377750599757,
+      "min_ms": 21.320906933397055,
+      "max_ms": 27.83616294618696,
+      "total_s": 0.250596834695898,
+      "errors": []
+    },
+    {
+      "label": "batch crop cached memmap B=2",
+      "n": 10,
+      "mean_ms": 12.529921799432486,
+      "median_ms": 12.474594521336257,
+      "min_ms": 12.080413987860084,
+      "max_ms": 13.216624967753887,
+      "total_s": 0.12529921799432486,
+      "errors": []
+    }
+  ]
+}

@@ -177,7 +177,7 @@ class CompatibleScheduleFreeWrapper:
 # Training settings
 EPOCHS = 300
 BATCH_SIZE = 1
-INPUT_SIZE = [128, 128, 128]
+INPUT_SIZE = [128, 128, 128]  # spatial input size for the model; adjust as needed for memory constraints and model architecture
 VAL_EVERY = 1
 NUM_GPUS = 1
 DEVICE = "cuda:0"
@@ -192,7 +192,7 @@ SEGMAMBA_MODALITY_DROPOUT_MAX_CHANNELS = 1
 # SegMamba model settings
 SEGMAMBA_IN_CHANS = 4
 SEGMAMBA_OUT_CHANS = 4
-SEGMAMBA_DEPTHS = [1, 1, 1, 1]
+SEGMAMBA_DEPTHS = [1, 1, 1, 1]  # number of Mamba blocks in each encoder stage
 SEGMAMBA_FEAT_SIZE = [48, 96, 192, 384]
 SEGMAMBA_HIDDEN_SIZE = 768
 SEGMAMBA_DROP_PATH_RATE = 0
@@ -201,16 +201,19 @@ SEGMAMBA_NORM_NAME = "instance"
 SEGMAMBA_DERF_NORM_ENABLED = False
 SEGMAMBA_DERF_ALPHA_INIT_VALUE = 0.5
 SEGMAMBA_DERF_SHIFT_INIT_VALUE = 0.0
-SEGMAMBA_CONV_BLOCK = True
+SEGMAMBA_3D_CONV = False
 SEGMAMBA_RES_BLOCK = True
-SEGMAMBA_KAN = True
-SEGMAMBA_SKAN = True
-SEGMAMBA_KAN_Z_WINDOW = True
-SEGMAMBA_KAN_Z_WINDOW_SIZE = (4, 4, 4)
+SEGMAMBA_KAN = False
+SEGMAMBA_SKAN = False
+SEGMAMBA_GROUPKAN = False
+SEGMAMBA_GROUPKAN_ACTIVE_GROUP = 16
+SEGMAMBA_GROUPKAN_CHANNEL_GROUP = 16
+SEGMAMBA_GROUPKAN_SPATIAL_MIXER = "pseudo3d"  # choices: pseudo3d, pwdw
+SEGMAMBA_KAN_MORTON_Z = False
 SEGMAMBA_SPATIAL_DIMS = 3
-SEGMAMBA_MAMBA_STAGES = [0, 1, 2, 3]  # encoder stage indices that use TSMamba; others fall back to GSC only
+SEGMAMBA_MAMBA_STAGES = [0,1, 2, 3]  # encoder stage indices that use TSMamba; others fall back to GSC only
 SEGMAMBA_STARRELU = False
-SEGMAMBA_ONSAMPLING = True
+SEGMAMBA_ONSAMPLING = False
 
 # Swin-DER model settings
 SWINDER_ONSAMPLING = False

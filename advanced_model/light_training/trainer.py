@@ -33,6 +33,31 @@ def _load_project_settings():
 
 project_settings = _load_project_settings()
 
+def _parameter_stats(model):
+    params = list(model.parameters())
+
+    def count(selected):
+        return sum(p.numel() for p in selected)
+
+    def memory_bytes(selected):
+        return sum(p.numel() * p.element_size() for p in selected)
+
+    trainable = [p for p in params if p.requires_grad]
+    frozen = [p for p in params if not p.requires_grad]
+    return {
+        "total_count": count(params),
+        "trainable_count": count(trainable),
+        "frozen_count": count(frozen),
+        "total_bytes": memory_bytes(params),
+        "trainable_bytes": memory_bytes(trainable),
+    }
+
+
+def _parameter_checksum(model):
+    with torch.no_grad():
+        return sum(float(p.detach().float().sum().cpu()) for p in model.parameters())
+
+
 class dummy_context(object):
     def __enter__(self):
         pass
@@ -258,7 +283,7 @@ class Trainer:
         parser.add_argument('--not_call_launch',
                             action='store_true',
                             help="not call launch!")
-        ds_args = parser.parse_args()
+        ds_args, _ = parser.parse_known_args()
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
         print(f"self.local_rank is {self.local_rank}")
@@ -410,13 +435,20 @@ class Trainer:
 
         set_determinism(self.seed + self.local_rank)
         if self.model is not None:
-            print(f"check model parameter: {next(self.model.parameters()).sum()}, keep model parameters on different processes consistent")
-            para = sum(np.prod(list(p.size())) for p in self.model.parameters())
+            checksum = _parameter_checksum(self.model)
+            print(f"parameter checksum: {checksum:.6f}, keep model parameters on different processes consistent")
+            param_stats = _parameter_stats(self.model)
             if self.local_rank == 0:
-                print(f"trainable params: {para / 1_000_000:.6f}M")
-                print(f"parameter memory (fp32): {para * 4 / 1_000_000:.6f} MB")
+                print(f"total params: {param_stats['total_count'] / 1_000_000:.6f}M")
+                print(f"trainable params: {param_stats['trainable_count'] / 1_000_000:.6f}M")
+                print(f"frozen params: {param_stats['frozen_count'] / 1_000_000:.6f}M")
+                print(f"parameter memory: {param_stats['total_bytes'] / 1_000_000:.6f} MB")
+                print(f"trainable parameter memory: {param_stats['trainable_bytes'] / 1_000_000:.6f} MB")
                 
         self.global_step = 0
+        start_epoch = int(getattr(self, "start_epoch", 0))
+        if start_epoch < 0:
+            raise ValueError(f"start_epoch must be >= 0, got {start_epoch}")
         if self.env_type == "pytorch":
             if self.model is not None:
                 self.model.to(self.device)
@@ -450,8 +482,11 @@ class Trainer:
         self.train_loader, self.val_loader = self.get_multi_processor_loader(train_dataset, val_dataset)
         
         self.max_steps = self.max_epochs * len(self.train_loader)
+        self.global_step = start_epoch * len(self.train_loader)
 
         print(f"step number is {self.max_steps}")
+        if start_epoch > 0:
+            print(f"resume training from epoch {start_epoch}, global_step {self.global_step}")
 
         scheduler_builder = getattr(self, "scheduler_builder", None)
         if callable(scheduler_builder):
@@ -500,7 +535,19 @@ class Trainer:
             self.scheduler = PolyLRScheduler(self.optimizer, initial_lr=lr, max_steps=self.max_steps)
             print(f"scheduler_type is poly, warmup steps is {0}")
 
-        for epoch in range(0, self.max_epochs):
+        if self.scheduler is not None and self.global_step > 0:
+            try:
+                self.scheduler.step(self.global_step)
+            except TypeError:
+                for _ in range(self.global_step):
+                    self.scheduler.step()
+
+        if start_epoch >= self.max_epochs:
+            if self.local_rank == 0:
+                print(f"start_epoch {start_epoch} >= max_epochs {self.max_epochs}; no epochs left to train.")
+            return
+
+        for epoch in range(start_epoch, self.max_epochs):
             self.epoch = epoch 
             if self.ddp:
                 torch.distributed.barrier()
@@ -601,12 +648,15 @@ class Trainer:
                 
     def load_state_dict(self, weight_path, strict=True):
         sd = torch.load(weight_path, map_location="cpu")
-        if "module" in sd :
-            sd = sd["module"]
+        if isinstance(sd, dict):
+            for key in ("state_dict", "model_state_dict", "model", "module"):
+                if key in sd and isinstance(sd[key], dict):
+                    sd = sd[key]
+                    break
         new_sd = {}
         for k, v in sd.items():
             k = str(k)
-            new_k = k[7:] if k.startswith("module") else k 
+            new_k = k[7:] if k.startswith("module.") else k 
             new_sd[new_k] = v 
 
         self.model.load_state_dict(new_sd, strict=strict)

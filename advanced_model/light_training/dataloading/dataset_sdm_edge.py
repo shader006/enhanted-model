@@ -120,6 +120,17 @@ class MedicalDataset(Dataset):
 
 
         print(f"data length is {len(self.datalist)}")
+        self._memmap_cache = {}
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_memmap_cache"] = {}
+        return state
+
+    def _load_memmap(self, path):
+        if path not in self._memmap_cache:
+            self._memmap_cache[path] = np.load(path, mmap_mode="r")
+        return self._memmap_cache[path]
         
     def load_pkl(self, data_path):
         pass 
@@ -133,11 +144,11 @@ class MedicalDataset(Dataset):
         
         image_path = data_path.replace(".npz", ".npy")
         seg_path = data_path.replace(".npz", "_seg.npy")
-        image_data = np.load(image_path, "r")
+        image_data = self._load_memmap(image_path)
       
         seg_data = None 
         if not self.test:
-            seg_data = np.load(seg_path, "r")
+            seg_data = self._load_memmap(seg_path)
         return image_data, seg_data
 
     # def post(self, batch_data):
@@ -164,7 +175,7 @@ class MedicalDataset(Dataset):
         case_name = properties["name"]
 
         if seg is not None:
-            sdm = np.load(os.path.join("./data/fullres/train_sdm/", f"{case_name}_seg_sdm.npy"), "r")
+            sdm = self._load_memmap(os.path.join("./data/fullres/train_sdm/", f"{case_name}_seg_sdm.npy"))
 
             # print(seg.shape, sdm.shape)
             sdm = sdm[0]

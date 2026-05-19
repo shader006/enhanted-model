@@ -1,0 +1,22 @@
+{
+  "label": "augmenter nomirror single-thread B=1",
+  "n": 10,
+  "mean_ms": 322.00730140320957,
+  "median_ms": 81.50488196406513,
+  "min_ms": 42.482670978643,
+  "max_ms": 1366.0242320038378,
+  "std_ms": 529.199344602312,
+  "data_dir": "SegMamba/data/fullres/train",
+  "stage": "augmenter",
+  "transform": "nomirror",
+  "backend": "single-thread",
+  "batch_size": 1,
+  "patch_size": [
+    96,
+    96,
+    96
+  ],
+  "n_cases": 10,
+  "n_batches": 10,
+  "warmup": 2
+}

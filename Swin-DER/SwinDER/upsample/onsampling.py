@@ -178,6 +178,37 @@ class Onsampling(nn.Module):
                               align_corners=False, padding_mode="border").view(B, 8, C, d_, h_, w_).permute(0, 2, 1, 3, 4, 5)
         return X
 
+    def weighted_neighbor_sample(self, x, grid, weights):
+        if self.spatial_dims == 2:
+            _, _, H, W = x.shape
+            offsets = torch.tensor([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=x.dtype, device=x.device)
+            normalizer = torch.tensor([W, H], dtype=x.dtype, device=x.device).view(1, 1, 1, 2)
+            out = None
+            for k in range(offsets.shape[0]):
+                coords = grid + offsets[k].view(1, 1, 1, 2)
+                coords = 2 * coords / normalizer - 1
+                sampled = F.grid_sample(x, coords, mode='bilinear', align_corners=False, padding_mode="border")
+                weighted = sampled * weights[:, k:k + 1]
+                out = weighted if out is None else out + weighted
+            return out
+
+        if self.spatial_dims == 3:
+            _, _, D, H, W = x.shape
+            offsets = torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
+                                    [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]],
+                                   dtype=x.dtype, device=x.device)
+            normalizer = torch.tensor([W, H, D], dtype=x.dtype, device=x.device).view(1, 1, 1, 1, 3)
+            out = None
+            for k in range(offsets.shape[0]):
+                coords = grid + offsets[k].view(1, 1, 1, 1, 3)
+                coords = 2 * coords / normalizer - 1
+                sampled = F.grid_sample(x, coords, mode='bilinear', align_corners=False, padding_mode="border")
+                weighted = sampled * weights[:, k:k + 1]
+                out = weighted if out is None else out + weighted
+            return out
+
+        raise ValueError(f"Unsupported spatial_dims: {self.spatial_dims}")
+
     def forward(self, X):
         if hasattr(self, 'preconv'):
             X = self.preconv(X)
@@ -187,12 +218,7 @@ class Onsampling(nn.Module):
         W = F.softmax(W, dim=1)
 
         grid = self.get_grid(X)
-        X = self.get_neighbor_pixels(X, grid)
-
-        if self.spatial_dims == 2:
-            X = torch.einsum('bkhw,bckhw->bchw', [W, X])
-        elif self.spatial_dims == 3:
-            X = torch.einsum('bkdhw,bckdhw->bcdhw', [W, X])
+        X = self.weighted_neighbor_sample(X, grid, W)
 
         return X
 

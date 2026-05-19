@@ -20,7 +20,50 @@ from batchgenerators.transforms.spatial_transforms import SpatialTransform, Mirr
 from batchgenerators.transforms.utility_transforms import RemoveLabelTransform, RenameTransform, NumpyToTensor
 
 
-def get_train_transforms(patch_size, mirror_axes=None):
+class ModalityDropoutTransform(AbstractTransform):
+    """Randomly zeroes whole input channels to simulate missing modalities."""
+
+    def __init__(self, p=0.0, max_channels=1):
+        self.p = float(p)
+        self.max_channels = int(max_channels)
+
+    def __call__(self, **data_dict):
+        data = data_dict.get("data")
+        if data is None or self.p <= 0.0:
+            return data_dict
+
+        if np.random.uniform() >= self.p:
+            return data_dict
+
+        channels = int(data.shape[1])
+        max_drop = min(self.max_channels, channels - 1)
+        if max_drop <= 0:
+            return data_dict
+
+        num_drop = int(np.random.randint(1, max_drop + 1))
+        drop_channels = np.random.choice(channels, size=num_drop, replace=False)
+        data = data.copy()
+        data[:, drop_channels] = 0
+        data_dict["data"] = data
+        return data_dict
+
+
+def _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels):
+    if modality_dropout_prob > 0.0 and modality_dropout_max_channels > 0:
+        tr_transforms.append(
+            ModalityDropoutTransform(
+                p=modality_dropout_prob,
+                max_channels=modality_dropout_max_channels,
+            )
+        )
+
+
+def get_train_transforms(
+    patch_size,
+    mirror_axes=None,
+    modality_dropout_prob=0.0,
+    modality_dropout_max_channels=1,
+):
     tr_transforms = []
     patch_size_spatial = patch_size
     ignore_axes = None
@@ -54,6 +97,7 @@ def get_train_transforms(patch_size, mirror_axes=None):
     if mirror_axes is not None and len(mirror_axes) > 0:
         tr_transforms.append(MirrorTransform(mirror_axes))
 
+    _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels)
     tr_transforms.append(RemoveLabelTransform(-1, 0))
     tr_transforms.append(NumpyToTensor(['data', 'seg'], 'float'))
 
@@ -61,7 +105,12 @@ def get_train_transforms(patch_size, mirror_axes=None):
 
     return tr_transforms
 
-def get_train_transforms_nomirror(patch_size, mirror_axes=None):
+def get_train_transforms_nomirror(
+    patch_size,
+    mirror_axes=None,
+    modality_dropout_prob=0.0,
+    modality_dropout_max_channels=1,
+):
     tr_transforms = []
     patch_size_spatial = patch_size
     ignore_axes = None
@@ -95,6 +144,7 @@ def get_train_transforms_nomirror(patch_size, mirror_axes=None):
     # if mirror_axes is not None and len(mirror_axes) > 0:
     #     tr_transforms.append(MirrorTransform(mirror_axes))
 
+    _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels)
     tr_transforms.append(RemoveLabelTransform(-1, 0))
     tr_transforms.append(NumpyToTensor(['data', 'seg'], 'float'))
 
@@ -102,7 +152,12 @@ def get_train_transforms_nomirror(patch_size, mirror_axes=None):
 
     return tr_transforms
 
-def get_train_transforms_onlymirror(patch_size, mirror_axes=None):
+def get_train_transforms_onlymirror(
+    patch_size,
+    mirror_axes=None,
+    modality_dropout_prob=0.0,
+    modality_dropout_max_channels=1,
+):
     tr_transforms = []
     patch_size_spatial = patch_size
     ignore_axes = None
@@ -136,6 +191,7 @@ def get_train_transforms_onlymirror(patch_size, mirror_axes=None):
     if mirror_axes is not None and len(mirror_axes) > 0:
         tr_transforms.append(MirrorTransform(mirror_axes))
 
+    _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels)
     tr_transforms.append(RemoveLabelTransform(-1, 0))
     tr_transforms.append(NumpyToTensor(['data', 'seg'], 'float'))
 
@@ -143,7 +199,12 @@ def get_train_transforms_onlymirror(patch_size, mirror_axes=None):
 
     return tr_transforms
 
-def get_train_transforms_onlyspatial(patch_size, mirror_axes=None):
+def get_train_transforms_onlyspatial(
+    patch_size,
+    mirror_axes=None,
+    modality_dropout_prob=0.0,
+    modality_dropout_max_channels=1,
+):
     tr_transforms = []
     patch_size_spatial = patch_size
     ignore_axes = None
@@ -177,6 +238,7 @@ def get_train_transforms_onlyspatial(patch_size, mirror_axes=None):
     if mirror_axes is not None and len(mirror_axes) > 0:
         tr_transforms.append(MirrorTransform(mirror_axes))
 
+    _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels)
     tr_transforms.append(RemoveLabelTransform(-1, 0))
     tr_transforms.append(NumpyToTensor(['data', 'seg'], 'float'))
 
@@ -184,7 +246,12 @@ def get_train_transforms_onlyspatial(patch_size, mirror_axes=None):
 
     return tr_transforms
 
-def get_train_transforms_noaug(patch_size, mirror_axes=None):
+def get_train_transforms_noaug(
+    patch_size,
+    mirror_axes=None,
+    modality_dropout_prob=0.0,
+    modality_dropout_max_channels=1,
+):
     tr_transforms = []
     # patch_size_spatial = patch_size
     # ignore_axes = None
@@ -218,6 +285,7 @@ def get_train_transforms_noaug(patch_size, mirror_axes=None):
     # if mirror_axes is not None and len(mirror_axes) > 0:
     #     tr_transforms.append(MirrorTransform(mirror_axes))
 
+    _append_modality_dropout(tr_transforms, modality_dropout_prob, modality_dropout_max_channels)
     tr_transforms.append(RemoveLabelTransform(-1, 0))
     tr_transforms.append(NumpyToTensor(['data', 'seg'], 'float'))
 

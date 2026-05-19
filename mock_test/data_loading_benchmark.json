@@ -1,0 +1,52 @@
+{
+  "data_dir": "SegMamba/data/fullres/train",
+  "cases": [
+    "BraTS2021_00000.npz",
+    "BraTS2021_00002.npz",
+    "BraTS2021_00003.npz",
+    "BraTS2021_00005.npz",
+    "BraTS2021_00006.npz"
+  ],
+  "results": [
+    {
+      "label": "current .npy mmap + .pkl",
+      "n": 5,
+      "mean_ms": 3.1511069973930717,
+      "median_ms": 3.1113940058276057,
+      "min_ms": 3.065034979954362,
+      "max_ms": 3.32585908472538,
+      "total_s": 0.015755534986965358,
+      "errors": []
+    },
+    {
+      "label": "current .npy materialized + .pkl",
+      "n": 5,
+      "mean_ms": 28.79313782323152,
+      "median_ms": 28.17776903975755,
+      "min_ms": 25.571695063263178,
+      "max_ms": 33.16038800403476,
+      "total_s": 0.1439656891161576,
+      "errors": []
+    },
+    {
+      "label": ".npy materialized only",
+      "n": 5,
+      "mean_ms": 25.031145405955613,
+      "median_ms": 25.053029065020382,
+      "min_ms": 21.99186396319419,
+      "max_ms": 27.335108956322074,
+      "total_s": 0.12515572702977806,
+      "errors": []
+    },
+    {
+      "label": "compressed .npz + .pkl",
+      "n": 5,
+      "mean_ms": 148.26683041173965,
+      "median_ms": 151.3045880710706,
+      "min_ms": 134.3559540109709,
+      "max_ms": 160.89712199755013,
+      "total_s": 0.7413341520586982,
+      "errors": []
+    }
+  ]
+}

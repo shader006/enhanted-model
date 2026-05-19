@@ -32,7 +32,7 @@ def lelu(x, k):
 
 # y = log(1 + e^(kx)) - log(2), Shifted Softplus
 def lshifted_softplus(x, k):
-    return torch.log(1 + torch.exp(k[0]*x)) - np.log(2)
+    return torch.nn.functional.softplus(k[0] * x) - np.log(2)
 
 # y = 0.5 * x * (1 + tanh(sqrt(2/pi) * (kx + 0.044715 * k^3 * x^3))), Gaussian Error Linear Unit with Parameter (GELU-P)
 def lgelup(x, k):

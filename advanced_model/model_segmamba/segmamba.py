@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import importlib
+import math
 from pathlib import Path
 
 import torch.nn as nn
@@ -27,8 +28,7 @@ if SWINDER_DIR.exists() and str(SWINDER_DIR) not in sys.path:
     sys.path.insert(0, str(SWINDER_DIR))
 
 from monai.networks.blocks.dynunet_block import UnetOutBlock
-from monai.networks.blocks.unetr_block import UnetrUpBlock
-from monai.networks.nets.swin_unetr import get_window_size, window_partition, window_reverse
+from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
 from mamba_ssm import Mamba
 import torch.nn.functional as F 
 
@@ -263,6 +263,8 @@ class MambaLayer(nn.Module):
         img_dims = x.shape[2:]
         x_flat = x.reshape(B, C, n_tokens).transpose(-1, -2)
         x_norm = self.norm(x_flat)
+        if hasattr(self.mamba, "nslices") and len(img_dims) > 0:
+            self.mamba.nslices = int(img_dims[0])
         x_mamba = self.mamba(x_norm)
 
         out = x_mamba.transpose(-1, -2).reshape(B, C, *img_dims)
@@ -367,6 +369,44 @@ def _norm3d(channels, norm_name="instance"):
     return nn.InstanceNorm3d(channels)
 
 
+def _valid_group_count(*channels, requested=16):
+    requested = max(1, int(requested))
+    max_group = min(requested, *(int(channel) for channel in channels))
+    for group in range(max_group, 0, -1):
+        if all(int(channel) % group == 0 for channel in channels):
+            return group
+    return 1
+
+
+def _make_group_kan_linear(linear_cls, in_features, out_features, grid_size=5, spline_order=3):
+    if linear_cls is KANLinear:
+        return linear_cls(
+            in_features,
+            out_features,
+            grid_size=grid_size,
+            spline_order=spline_order,
+        )
+    return linear_cls(in_features, out_features)
+
+
+def _make_groupkan_spatial_mixer(
+    channels,
+    norm_name="instance",
+    bottleneck_ratio=4,
+    spatial_mixer="pseudo3d",
+):
+    if str(spatial_mixer).lower() == "pwdw":
+        return PWDWConv3D(channels, norm_name=norm_name)
+    return Pseudo3DBottleneckBlock(
+        channels,
+        channels,
+        norm_name=norm_name,
+        bottleneck_ratio=bottleneck_ratio,
+        res_block=False,
+        use_starrelu=False,
+    )
+
+
 def _part1by2(n: torch.Tensor):
     n = (n | (n << 16)) & 0x030000FF
     n = (n | (n << 8)) & 0x0300F00F
@@ -401,8 +441,7 @@ class Pseudo3DBottleneckBlock(nn.Module):
         bottleneck_ratio=4,
         res_block=True,
         use_starrelu=False,
-        z_window_enabled=False,
-        z_window_size=(4, 4, 4),
+        morton_z_enabled=False,
     ):
         super().__init__()
         hidden_channels = max(out_channels // bottleneck_ratio, 8)
@@ -444,8 +483,7 @@ class TokenKANPseudo3DBlock(nn.Module):
         bottleneck_ratio=4,
         res_block=True,
         use_starrelu=False,
-        z_window_enabled=False,
-        z_window_size=(4, 4, 4),
+        morton_z_enabled=False,
         linear_cls=None,
         linear_name="KANLinear",
     ):
@@ -486,38 +524,27 @@ class TokenKANPseudo3DBlock(nn.Module):
         )
         self.out_norm = _norm3d(out_channels, norm_name)
         self.act = _make_activation("gelu", use_starrelu=False)
-        self.z_window_enabled = bool(z_window_enabled)
-        self.z_window_size = tuple(int(size) for size in z_window_size)
+        self.morton_z_enabled = bool(morton_z_enabled)
         self._morton_cache = {}
 
     def _volume_to_tokens(self, x):
         b, c, d, h, w = x.shape
-        if not self.z_window_enabled:
-            tokens = x.reshape(b, c, d * h * w).transpose(1, 2).contiguous()
+        tokens = x.reshape(b, c, d * h * w).transpose(1, 2).contiguous()
+        if not self.morton_z_enabled:
             return tokens, {"mode": "global", "spatial_shape": (d, h, w)}
 
-        window_size = get_window_size((d, h, w), self.z_window_size)
-        pad_d = (window_size[0] - d % window_size[0]) % window_size[0]
-        pad_h = (window_size[1] - h % window_size[1]) % window_size[1]
-        pad_w = (window_size[2] - w % window_size[2]) % window_size[2]
-        x_padded = F.pad(x, (0, pad_w, 0, pad_h, 0, pad_d))
-        padded_shape = x_padded.shape[2:]
-        windows = window_partition(x_padded.permute(0, 2, 3, 4, 1).contiguous(), window_size)
-        perm, inv = self._get_morton_perm(window_size, x.device)
-        tokens = windows[:, perm, :].contiguous()
+        perm, inv = self._get_morton_perm((d, h, w), x.device)
+        tokens = tokens[:, perm, :].contiguous()
         return tokens, {
-            "mode": "z_window",
-            "batch_size": b,
+            "mode": "morton_z",
             "spatial_shape": (d, h, w),
-            "padded_shape": padded_shape,
-            "window_size": window_size,
             "inverse_perm": inv,
         }
 
-    def _get_morton_perm(self, window_size, device):
-        key = tuple(window_size)
+    def _get_morton_perm(self, spatial_shape, device):
+        key = tuple(spatial_shape)
         if key not in self._morton_cache:
-            self._morton_cache[key] = _morton_perm_3d(*window_size, device=torch.device("cpu"))
+            self._morton_cache[key] = _morton_perm_3d(*spatial_shape, device=torch.device("cpu"))
         perm, inv = self._morton_cache[key]
         if perm.device != device:
             perm = perm.to(device=device)
@@ -531,24 +558,18 @@ class TokenKANPseudo3DBlock(nn.Module):
         return tokens.transpose(1, 2).reshape(b, c, d, h, w).contiguous()
 
     @staticmethod
-    def _window_tokens_to_volume(tokens, token_meta):
+    def _morton_tokens_to_volume(tokens, token_meta):
         inverse_perm = token_meta["inverse_perm"]
-        batch_size = token_meta["batch_size"]
-        padded_shape = token_meta["padded_shape"]
         spatial_shape = token_meta["spatial_shape"]
-        window_size = token_meta["window_size"]
-        windows = tokens[:, inverse_perm, :].contiguous()
-        volume = window_reverse(windows, window_size, (batch_size, *padded_shape))
-        volume = volume.permute(0, 4, 1, 2, 3).contiguous()
-        d, h, w = spatial_shape
-        return volume[:, :, :d, :h, :w].contiguous()
+        tokens = tokens[:, inverse_perm, :].contiguous()
+        return TokenKANPseudo3DBlock._global_tokens_to_volume(tokens, spatial_shape)
 
     @staticmethod
     def _tokens_to_volume(tokens, token_meta):
         if token_meta["mode"] == "global":
             return TokenKANPseudo3DBlock._global_tokens_to_volume(tokens, token_meta["spatial_shape"])
-        if token_meta["mode"] == "z_window":
-            return TokenKANPseudo3DBlock._window_tokens_to_volume(tokens, token_meta)
+        if token_meta["mode"] == "morton_z":
+            return TokenKANPseudo3DBlock._morton_tokens_to_volume(tokens, token_meta)
         raise ValueError(f"Unsupported token reconstruction mode: {token_meta['mode']}")
 
     def forward(self, x):
@@ -574,6 +595,224 @@ class TokenKANPseudo3DBlock(nn.Module):
 class TokenSKANPseudo3DBlock(TokenKANPseudo3DBlock):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, linear_cls=SKANLinear, linear_name="SKANLinear_pure", **kwargs)
+
+
+class GroupedKANActivation(nn.Module):
+    def __init__(self, channels, group=16, linear_cls=None, linear_name="KANLinear"):
+        super().__init__()
+        linear_cls = KANLinear if linear_cls is None else linear_cls
+        if linear_cls is None:
+            raise ModuleNotFoundError(f"{linear_name} could not be loaded for GroupedKANActivation.")
+
+        self.channels = int(channels)
+        self.group = _valid_group_count(self.channels, requested=group)
+        self.channels_per_group = self.channels // self.group
+        self.vectorized_lss = linear_cls is SKANLinear
+        if self.vectorized_lss:
+            self.weight = nn.Parameter(torch.empty(self.group, 2))
+            nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+            with torch.no_grad():
+                self.weight[:, -1].zero_()
+            self.register_buffer("log2", torch.tensor(math.log(2.0)), persistent=False)
+        else:
+            self.group_kan = nn.ModuleList([linear_cls(1, 1) for _ in range(self.group)])
+
+    def forward(self, tokens):
+        b, n, c = tokens.shape
+        if self.vectorized_lss:
+            grouped = tokens.view(b, n, self.group, self.channels_per_group)
+            scale = self.weight[:, 0].view(1, 1, self.group, 1)
+            bias = self.weight[:, 1].view(1, 1, self.group, 1)
+            grouped = F.softplus(grouped * scale) - self.log2
+            grouped = grouped + F.softplus(bias) - self.log2
+            return grouped.reshape(b, n, c)
+
+        group_outputs = []
+        for group_idx, kan in enumerate(self.group_kan):
+            start = group_idx * self.channels_per_group
+            end = start + self.channels_per_group
+            group_tokens = tokens[:, :, start:end].reshape(-1, 1)
+            group_tokens = kan(group_tokens).view(b, n, self.channels_per_group)
+            group_outputs.append(group_tokens)
+        return torch.cat(group_outputs, dim=2)
+
+
+class GroupedKANTransform(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        group=16,
+        grid_size=5,
+        spline_order=3,
+        linear_cls=None,
+        linear_name="KANLinear",
+    ):
+        super().__init__()
+        linear_cls = KANLinear if linear_cls is None else linear_cls
+        if linear_cls is None:
+            raise ModuleNotFoundError(f"{linear_name} could not be loaded for GroupedKANTransform.")
+
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels)
+        self.group = _valid_group_count(self.in_channels, self.out_channels, requested=group)
+        self.in_per_group = self.in_channels // self.group
+        self.out_per_group = self.out_channels // self.group
+        self.vectorized_lss = linear_cls is SKANLinear
+        if self.vectorized_lss:
+            self.weight = nn.Parameter(torch.empty(self.group, self.out_per_group, self.in_per_group + 1))
+            nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+            with torch.no_grad():
+                self.weight[:, :, -1].zero_()
+            self.register_buffer("log2", torch.tensor(math.log(2.0)), persistent=False)
+        else:
+            self.group_kan = nn.ModuleList(
+                [
+                    _make_group_kan_linear(
+                        linear_cls,
+                        self.in_per_group,
+                        self.out_per_group,
+                        grid_size=grid_size,
+                        spline_order=spline_order,
+                    )
+                    for _ in range(self.group)
+                ]
+            )
+
+    def forward(self, tokens):
+        b, n, _ = tokens.shape
+        if self.vectorized_lss:
+            grouped = tokens.view(b, n, self.group, self.in_per_group)
+            input_weight = self.weight[:, :, :-1].view(1, 1, self.group, self.out_per_group, self.in_per_group)
+            bias_weight = self.weight[:, :, -1].view(1, 1, self.group, self.out_per_group)
+            grouped = grouped.unsqueeze(3)
+            grouped = (F.softplus(grouped * input_weight) - self.log2).sum(dim=-1)
+            grouped = grouped + F.softplus(bias_weight) - self.log2
+            return grouped.reshape(b, n, self.out_channels)
+
+        group_outputs = []
+        for group_idx, kan in enumerate(self.group_kan):
+            start = group_idx * self.in_per_group
+            end = start + self.in_per_group
+            group_tokens = tokens[:, :, start:end].reshape(b * n, self.in_per_group)
+            group_tokens = kan(group_tokens).view(b, n, self.out_per_group)
+            group_outputs.append(group_tokens)
+        return torch.cat(group_outputs, dim=2)
+
+
+class PWDWConv3D(nn.Module):
+    def __init__(self, channels, norm_name="batch"):
+        super().__init__()
+        self.pwconv = nn.Conv3d(channels, channels, kernel_size=1, bias=False)
+        self.pw_norm = _norm3d(channels, norm_name)
+        self.pw_act = nn.ReLU(inplace=True)
+        self.dwconv = nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=True, groups=channels)
+        self.dw_norm = _norm3d(channels, norm_name)
+        self.dw_act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.pwconv(x)
+        x = self.pw_norm(x)
+        x = self.pw_act(x)
+        x = self.dwconv(x)
+        x = self.dw_norm(x)
+        return self.dw_act(x)
+
+
+class TokenGroupKANPseudo3DBlock(TokenKANPseudo3DBlock):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        norm_name="instance",
+        bottleneck_ratio=4,
+        res_block=True,
+        use_starrelu=False,
+        morton_z_enabled=False,
+        active_group=16,
+        channel_group=16,
+        spatial_mixer="pseudo3d",
+        linear_cls=None,
+        linear_name="KANLinear",
+    ):
+        nn.Module.__init__(self)
+        linear_cls = KANLinear if linear_cls is None else linear_cls
+        if linear_cls is None:
+            raise ModuleNotFoundError(f"{linear_name} could not be loaded for TokenGroupKANPseudo3DBlock.")
+
+        self.res_block = res_block
+        self.linear_cls = linear_cls
+        self.proj = (
+            nn.Identity()
+            if in_channels == out_channels
+            else nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=False)
+        )
+        self.token_norm1 = nn.LayerNorm(in_channels)
+        self.gka1 = GroupedKANActivation(
+            in_channels,
+            group=active_group,
+            linear_cls=linear_cls,
+            linear_name=linear_name,
+        )
+        self.fc1 = GroupedKANTransform(
+            in_channels,
+            out_channels,
+            group=channel_group,
+            linear_cls=linear_cls,
+            linear_name=linear_name,
+        )
+        self.spatial_mixer1 = _make_groupkan_spatial_mixer(
+            out_channels,
+            norm_name=norm_name,
+            bottleneck_ratio=bottleneck_ratio,
+            spatial_mixer=spatial_mixer,
+        )
+        self.token_norm2 = nn.LayerNorm(out_channels)
+        self.gka2 = GroupedKANActivation(
+            out_channels,
+            group=active_group,
+            linear_cls=linear_cls,
+            linear_name=linear_name,
+        )
+        self.fc2 = GroupedKANTransform(
+            out_channels,
+            out_channels,
+            group=channel_group,
+            linear_cls=linear_cls,
+            linear_name=linear_name,
+        )
+        self.spatial_mixer2 = _make_groupkan_spatial_mixer(
+            out_channels,
+            norm_name=norm_name,
+            bottleneck_ratio=bottleneck_ratio,
+            spatial_mixer=spatial_mixer,
+        )
+        self.out_norm = _norm3d(out_channels, norm_name)
+        self.act = _make_activation("gelu", use_starrelu=False)
+        self.morton_z_enabled = bool(morton_z_enabled)
+        self._morton_cache = {}
+
+    def forward(self, x):
+        residual = self.proj(x)
+
+        tokens, token_meta = self._volume_to_tokens(x)
+        tokens = self.token_norm1(tokens)
+        tokens = self.gka1(tokens)
+        tokens = self.fc1(tokens)
+        out = self._tokens_to_volume(tokens, token_meta)
+        out = self.spatial_mixer1(out)
+
+        tokens, token_meta = self._volume_to_tokens(out)
+        tokens = self.token_norm2(tokens)
+        tokens = self.gka2(tokens)
+        tokens = self.fc2(tokens)
+        out = self._tokens_to_volume(tokens, token_meta)
+        out = self.spatial_mixer2(out)
+
+        out = self.out_norm(out)
+        if self.res_block:
+            out = out + residual
+        return self.act(out)
 
 
 class Pseudo3DUpBlock(nn.Module):
@@ -632,8 +871,7 @@ class TokenKANPseudo3DUpBlock(nn.Module):
         res_block=True,
         upsample_mode="transconv",
         use_starrelu=False,
-        z_window_enabled=False,
-        z_window_size=(4, 4, 4),
+        morton_z_enabled=False,
     ):
         super().__init__()
         if spatial_dims != 3:
@@ -660,8 +898,7 @@ class TokenKANPseudo3DUpBlock(nn.Module):
             norm_name=norm_name,
             res_block=res_block,
             use_starrelu=use_starrelu,
-            z_window_enabled=z_window_enabled,
-            z_window_size=z_window_size,
+            morton_z_enabled=morton_z_enabled,
         )
 
     def forward(self, inp, skip):
@@ -681,8 +918,7 @@ class TokenSKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
         res_block=True,
         upsample_mode="transconv",
         use_starrelu=False,
-        z_window_enabled=False,
-        z_window_size=(4, 4, 4),
+        morton_z_enabled=False,
     ):
         nn.Module.__init__(self)
         if spatial_dims != 3:
@@ -709,12 +945,64 @@ class TokenSKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
             norm_name=norm_name,
             res_block=res_block,
             use_starrelu=use_starrelu,
-            z_window_enabled=z_window_enabled,
-            z_window_size=z_window_size,
+            morton_z_enabled=morton_z_enabled,
+        )
+
+
+class TokenGroupKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
+    def __init__(
+        self,
+        spatial_dims,
+        in_channels,
+        out_channels,
+        upsample_kernel_size,
+        norm_name="instance",
+        res_block=True,
+        upsample_mode="transconv",
+        use_starrelu=False,
+        morton_z_enabled=False,
+        active_group=16,
+        channel_group=16,
+        spatial_mixer="pseudo3d",
+        linear_cls=None,
+        linear_name="KANLinear",
+    ):
+        nn.Module.__init__(self)
+        if spatial_dims != 3:
+            raise ValueError("TokenGroupKANPseudo3DUpBlock only supports spatial_dims=3.")
+        if upsample_mode == "onsampling":
+            if Onsampling is None:
+                raise ModuleNotFoundError("Onsampling is unavailable. Ensure Swin-DER is present in the project.")
+            self.upsample = Onsampling(
+                spatial_dims=spatial_dims,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                dyscope=True,
+            )
+        else:
+            self.upsample = nn.ConvTranspose3d(
+                in_channels,
+                out_channels,
+                kernel_size=upsample_kernel_size,
+                stride=upsample_kernel_size,
+            )
+        self.conv_block = TokenGroupKANPseudo3DBlock(
+            out_channels + out_channels,
+            out_channels,
+            norm_name=norm_name,
+            res_block=res_block,
+            use_starrelu=use_starrelu,
+            morton_z_enabled=morton_z_enabled,
+            active_group=active_group,
+            channel_group=channel_group,
+            spatial_mixer=spatial_mixer,
+            linear_cls=linear_cls,
+            linear_name=linear_name,
         )
 
 
 def _make_decoder_block(
+    use_unet_3d_conv,
     upsample_mode,
     spatial_dims,
     in_channels,
@@ -723,25 +1011,53 @@ def _make_decoder_block(
     res_block,
     use_starrelu=False,
 ):
-    if upsample_mode == "onsampling":
-        return Pseudo3DUpBlock(
+    if use_unet_3d_conv:
+        return UnetrUpBlock(
             spatial_dims=spatial_dims,
             in_channels=in_channels,
             out_channels=out_channels,
+            kernel_size=3,
             upsample_kernel_size=2,
             norm_name=norm_name,
             res_block=res_block,
-            upsample_mode=upsample_mode,
-            use_starrelu=use_starrelu,
         )
-    return UnetrUpBlock(
+    return Pseudo3DUpBlock(
         spatial_dims=spatial_dims,
         in_channels=in_channels,
         out_channels=out_channels,
-        kernel_size=3,
         upsample_kernel_size=2,
         norm_name=norm_name,
         res_block=res_block,
+        upsample_mode=upsample_mode,
+        use_starrelu=use_starrelu,
+    )
+
+
+def _make_encoder_block(
+    use_unet_3d_conv,
+    spatial_dims,
+    in_channels,
+    out_channels,
+    norm_name,
+    res_block,
+    use_starrelu=False,
+):
+    if use_unet_3d_conv:
+        return UnetrBasicBlock(
+            spatial_dims=spatial_dims,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=1,
+            norm_name=norm_name,
+            res_block=res_block,
+        )
+    return Pseudo3DBottleneckBlock(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        norm_name=norm_name,
+        res_block=res_block,
+        use_starrelu=use_starrelu,
     )
 
 
@@ -848,8 +1164,12 @@ class SegMamba(nn.Module):
         starrelu_enabled=None,
         kan_enabled=None,
         skan_enabled=None,
-        kan_z_window_enabled=None,
-        kan_z_window_size=None,
+        groupkan_enabled=None,
+        groupkan_active_group=None,
+        groupkan_channel_group=None,
+        groupkan_spatial_mixer=None,
+        kan_morton_z_enabled=None,
+        use_unet_3d_conv=None,
         use_settings: bool = True,
     ) -> None:
         super().__init__()
@@ -879,20 +1199,40 @@ class SegMamba(nn.Module):
             if skan_enabled is not None
             else _setting_or_default(settings, "SEGMAMBA_SKAN", False)
         )
-        kan_z_window_enabled = (
-            kan_z_window_enabled
-            if kan_z_window_enabled is not None
-            else _setting_or_default(settings, "SEGMAMBA_KAN_Z_WINDOW", False)
+        groupkan_enabled = (
+            groupkan_enabled
+            if groupkan_enabled is not None
+            else _setting_or_default(settings, "SEGMAMBA_GROUPKAN", False)
         )
-        kan_z_window_size = (
-            kan_z_window_size
-            if kan_z_window_size is not None
-            else _setting_or_default(settings, "SEGMAMBA_KAN_Z_WINDOW_SIZE", (4, 4, 4))
+        groupkan_active_group = (
+            groupkan_active_group
+            if groupkan_active_group is not None
+            else _setting_or_default(settings, "SEGMAMBA_GROUPKAN_ACTIVE_GROUP", 16)
+        )
+        groupkan_channel_group = (
+            groupkan_channel_group
+            if groupkan_channel_group is not None
+            else _setting_or_default(settings, "SEGMAMBA_GROUPKAN_CHANNEL_GROUP", 16)
+        )
+        groupkan_spatial_mixer = (
+            groupkan_spatial_mixer
+            if groupkan_spatial_mixer is not None
+            else _setting_or_default(settings, "SEGMAMBA_GROUPKAN_SPATIAL_MIXER", "pseudo3d")
+        )
+        kan_morton_z_enabled = (
+            kan_morton_z_enabled
+            if kan_morton_z_enabled is not None
+            else _setting_or_default(settings, "SEGMAMBA_KAN_MORTON_Z", False)
         )
         spatial_dims = spatial_dims if spatial_dims is not None else _setting_or_default(settings, "SEGMAMBA_SPATIAL_DIMS", 3)
         input_size = input_size if input_size is not None else _setting_or_default(settings, "INPUT_SIZE", [128, 128, 128])
         mamba_stages = mamba_stages if mamba_stages is not None else _setting_or_default(settings, "SEGMAMBA_MAMBA_STAGES", [0, 1, 2, 3])
         starrelu_enabled = starrelu_enabled if starrelu_enabled is not None else _setting_or_default(settings, "SEGMAMBA_STARRELU", False)
+        use_unet_3d_conv = (
+            use_unet_3d_conv
+            if use_unet_3d_conv is not None
+            else _setting_or_default(settings, "SEGMAMBA_3D_CONV", False)
+        )
         upsample_mode = "onsampling" if _setting_or_default(settings, "SEGMAMBA_ONSAMPLING", False) else "transconv"
         derf_norm_enabled = _setting_or_default(settings, "SEGMAMBA_DERF_NORM_ENABLED", False)
         derf_alpha_init_value = _setting_or_default(settings, "SEGMAMBA_DERF_ALPHA_INIT_VALUE", 0.5)
@@ -911,8 +1251,12 @@ class SegMamba(nn.Module):
         self.starrelu_enabled = bool(starrelu_enabled)
         self.kan_enabled = bool(kan_enabled)
         self.skan_enabled = bool(skan_enabled)
-        self.kan_z_window_enabled = bool(kan_z_window_enabled)
-        self.kan_z_window_size = tuple(int(size) for size in kan_z_window_size)
+        self.groupkan_enabled = bool(groupkan_enabled)
+        self.groupkan_active_group = int(groupkan_active_group)
+        self.groupkan_channel_group = int(groupkan_channel_group)
+        self.groupkan_spatial_mixer = str(groupkan_spatial_mixer).lower()
+        self.kan_morton_z_enabled = bool(kan_morton_z_enabled)
+        self.use_unet_3d_conv = bool(use_unet_3d_conv)
 
         self.spatial_dims = spatial_dims
         self.vit = MambaEncoder(in_chans, 
@@ -924,28 +1268,36 @@ class SegMamba(nn.Module):
                                 mamba_stages=mamba_stages,
                                 use_starrelu=self.starrelu_enabled,
                               )
-        self.encoder1 = Pseudo3DBottleneckBlock(
+        self.encoder1 = _make_encoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
+            spatial_dims=spatial_dims,
             in_channels=self.in_chans,
             out_channels=self.feat_size[0],
             norm_name=norm_name,
             res_block=res_block,
             use_starrelu=self.starrelu_enabled,
         )
-        self.encoder2 = Pseudo3DBottleneckBlock(
+        self.encoder2 = _make_encoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
+            spatial_dims=spatial_dims,
             in_channels=self.feat_size[0],
             out_channels=self.feat_size[0],
             norm_name=norm_name,
             res_block=res_block,
             use_starrelu=self.starrelu_enabled,
         )
-        self.encoder3 = Pseudo3DBottleneckBlock(
+        self.encoder3 = _make_encoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
+            spatial_dims=spatial_dims,
             in_channels=self.feat_size[1],
             out_channels=self.feat_size[1],
             norm_name=norm_name,
             res_block=res_block,
             use_starrelu=self.starrelu_enabled,
         )
-        self.encoder4 = Pseudo3DBottleneckBlock(
+        self.encoder4 = _make_encoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
+            spatial_dims=spatial_dims,
             in_channels=self.feat_size[2],
             out_channels=self.feat_size[2],
             norm_name=norm_name,
@@ -953,38 +1305,75 @@ class SegMamba(nn.Module):
             use_starrelu=self.starrelu_enabled,
         )
 
-        use_token_kan = self.kan_enabled or self.skan_enabled
-        if self.skan_enabled:
+        use_token_kan = (self.groupkan_enabled or self.kan_enabled or self.skan_enabled) and not self.use_unet_3d_conv
+        late_encoder_kwargs = {}
+        if self.use_unet_3d_conv:
+            late_encoder_block = None
+        elif self.groupkan_enabled:
+            late_encoder_block = TokenGroupKANPseudo3DBlock
+            groupkan_linear_cls = SKANLinear if self.skan_enabled else KANLinear
+            groupkan_linear_name = "SKANLinear_pure" if self.skan_enabled else "KANLinear"
+            late_encoder_kwargs = {
+                "active_group": self.groupkan_active_group,
+                "channel_group": self.groupkan_channel_group,
+                "spatial_mixer": self.groupkan_spatial_mixer,
+                "linear_cls": groupkan_linear_cls,
+                "linear_name": groupkan_linear_name,
+            }
+        elif self.skan_enabled:
             late_encoder_block = TokenSKANPseudo3DBlock
         elif self.kan_enabled:
             late_encoder_block = TokenKANPseudo3DBlock
         else:
             late_encoder_block = Pseudo3DBottleneckBlock
-        self.encoder5 = late_encoder_block(
-            in_channels=self.feat_size[3],
-            out_channels=self.feat_size[3],
-            norm_name=norm_name,
-            res_block=res_block,
-            use_starrelu=self.starrelu_enabled,
-            z_window_enabled=self.kan_z_window_enabled,
-            z_window_size=self.kan_z_window_size,
-        )
+        if self.use_unet_3d_conv:
+            self.encoder5 = _make_encoder_block(
+                use_unet_3d_conv=True,
+                spatial_dims=spatial_dims,
+                in_channels=self.feat_size[3],
+                out_channels=self.feat_size[3],
+                norm_name=norm_name,
+                res_block=res_block,
+            )
+        else:
+            self.encoder5 = late_encoder_block(
+                in_channels=self.feat_size[3],
+                out_channels=self.feat_size[3],
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                **late_encoder_kwargs,
+            )
         self.bottleneck_downsample = nn.Sequential(
             nn.InstanceNorm3d(self.feat_size[3]),
             nn.Conv3d(self.feat_size[3], self.hidden_size, kernel_size=2, stride=2),
         )
-        self.encoder6 = late_encoder_block(
-            in_channels=self.hidden_size,
-            out_channels=self.hidden_size,
-            norm_name=norm_name,
-            res_block=res_block,
-            use_starrelu=self.starrelu_enabled,
-            z_window_enabled=self.kan_z_window_enabled,
-            z_window_size=self.kan_z_window_size,
-        )
+        if self.use_unet_3d_conv:
+            self.encoder6 = _make_encoder_block(
+                use_unet_3d_conv=True,
+                spatial_dims=spatial_dims,
+                in_channels=self.hidden_size,
+                out_channels=self.hidden_size,
+                norm_name=norm_name,
+                res_block=res_block,
+            )
+        else:
+            self.encoder6 = late_encoder_block(
+                in_channels=self.hidden_size,
+                out_channels=self.hidden_size,
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                **late_encoder_kwargs,
+            )
 
         if use_token_kan:
-            decoder_block_cls = TokenSKANPseudo3DUpBlock if self.skan_enabled else TokenKANPseudo3DUpBlock
+            if self.groupkan_enabled:
+                decoder_block_cls = TokenGroupKANPseudo3DUpBlock
+            else:
+                decoder_block_cls = TokenSKANPseudo3DUpBlock if self.skan_enabled else TokenKANPseudo3DUpBlock
             self.decoder5 = decoder_block_cls(
                 spatial_dims=spatial_dims,
                 in_channels=self.hidden_size,
@@ -994,8 +1383,8 @@ class SegMamba(nn.Module):
                 res_block=res_block,
                 upsample_mode=upsample_mode,
                 use_starrelu=self.starrelu_enabled,
-                z_window_enabled=self.kan_z_window_enabled,
-                z_window_size=self.kan_z_window_size,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                **late_encoder_kwargs,
             )
             self.decoder4 = decoder_block_cls(
                 spatial_dims=spatial_dims,
@@ -1006,11 +1395,12 @@ class SegMamba(nn.Module):
                 res_block=res_block,
                 upsample_mode=upsample_mode,
                 use_starrelu=self.starrelu_enabled,
-                z_window_enabled=self.kan_z_window_enabled,
-                z_window_size=self.kan_z_window_size,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                **late_encoder_kwargs,
             )
         else:
             self.decoder5 = _make_decoder_block(
+                use_unet_3d_conv=self.use_unet_3d_conv,
                 upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
                 in_channels=self.hidden_size,
@@ -1020,6 +1410,7 @@ class SegMamba(nn.Module):
                 use_starrelu=self.starrelu_enabled,
             )
             self.decoder4 = _make_decoder_block(
+                use_unet_3d_conv=self.use_unet_3d_conv,
                 upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
                 in_channels=self.feat_size[3],
@@ -1029,6 +1420,7 @@ class SegMamba(nn.Module):
                 use_starrelu=self.starrelu_enabled,
             )
         self.decoder3 = _make_decoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
             upsample_mode=upsample_mode,
             spatial_dims=spatial_dims,
             in_channels=self.feat_size[2],
@@ -1038,6 +1430,7 @@ class SegMamba(nn.Module):
             use_starrelu=self.starrelu_enabled,
         )
         self.decoder2 = _make_decoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
             upsample_mode=upsample_mode,
             spatial_dims=spatial_dims,
             in_channels=self.feat_size[1],
@@ -1047,6 +1440,7 @@ class SegMamba(nn.Module):
             use_starrelu=self.starrelu_enabled,
         )
         self.decoder1 = _make_decoder_block(
+            use_unet_3d_conv=self.use_unet_3d_conv,
             upsample_mode=upsample_mode,
             spatial_dims=spatial_dims,
             in_channels=self.feat_size[0],

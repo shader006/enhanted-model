@@ -9,32 +9,93 @@ warnings.filterwarnings(
 )
 
 import numpy as np
-from light_training.dataloading.dataset import get_train_val_test_loader_from_split_json
 import torch
 import torch.nn as nn
 import json
 import sys
+import re
+import importlib.util
+from datetime import datetime
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BRATS23_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+sys.path = [
+    path
+    for path in sys.path
+    if os.path.abspath(path or os.getcwd()) != BASE_DIR
+]
+if BRATS23_DIR not in sys.path:
+    sys.path.insert(0, BRATS23_DIR)
+sys.path.append(BASE_DIR)
+
+from light_training.dataloading.dataset import get_train_val_test_loader_from_split_json
 from monai.inferers import SlidingWindowInferer
 from light_training.evaluation.metric import dice, hausdorff_distance_95
 from light_training.trainer import Trainer
 from monai.utils import set_determinism
 from light_training.utils.files_helper import save_new_model_and_delete_last
 from monai.losses import DiceCELoss
-from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BRATS23_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
-if BRATS23_DIR not in sys.path:
-    sys.path.insert(0, BRATS23_DIR)
+def _load_project_settings():
+    settings_path = os.path.join(BRATS23_DIR, "settings.py")
+    spec = importlib.util.spec_from_file_location("settings", settings_path)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"Unable to load settings from {settings_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["settings"] = module
+    spec.loader.exec_module(module)
+    return module
 
-import settings
+
+settings = _load_project_settings()
 
 settings.set_global_reproducibility()
 set_determinism(settings.REPRO_SEED)
 
-data_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "fullres", "train"))
+def parse_resume_checkpoint(argv):
+    positional_args = [arg for arg in argv[1:] if not arg.startswith("--")]
+    if not positional_args:
+        return None
+    if len(positional_args) > 1:
+        raise ValueError(
+            "Usage: python 3_train.py [path/to/model.pt]. "
+            f"Received extra positional arguments: {positional_args}"
+        )
+    resume_path = os.path.abspath(positional_args[0])
+    if not os.path.isfile(resume_path):
+        raise FileNotFoundError(f"Resume checkpoint does not exist: {resume_path}")
+    if not resume_path.endswith(".pt"):
+        raise ValueError(f"Resume checkpoint must be a .pt file: {resume_path}")
+    return resume_path
+
+
+def infer_run_name_from_checkpoint(checkpoint_path):
+    parts = os.path.normpath(checkpoint_path).split(os.sep)
+    for i in range(len(parts) - 2):
+        if parts[i] == "Log" and parts[i + 1] == "SegMamba":
+            return parts[i + 2]
+    return None
+
+
+def infer_start_epoch_from_checkpoint(checkpoint_path):
+    filename = os.path.basename(checkpoint_path)
+    match = re.search(r"(?:^|_)ep(\d+)(?:_|\.|$)", filename)
+    if match:
+        return int(match.group(1)) + 1
+    return 0
+
+
+resume_checkpoint_path = parse_resume_checkpoint(sys.argv)
+resume_start_epoch = infer_start_epoch_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else 0
+resume_run_name = infer_run_name_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else None
+
+_data_dir_candidates = [
+    os.path.abspath(os.path.join(BASE_DIR, "..", "data", "fullres", "train")),
+    os.path.abspath(os.path.join(BASE_DIR, "..", "..", "data", "fullres", "train")),
+]
+data_dir = next((path for path in _data_dir_candidates if os.path.isdir(path)), _data_dir_candidates[0])
 split_json_file = os.path.abspath(os.path.join(BASE_DIR, "..", "brats23_split_70_10_20.json"))
-run_name = settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("segmamba_%Y%m%d_%H%M%S")
+run_name = resume_run_name or settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("segmamba_%Y%m%d_%H%M%S")
 run_root = os.path.join(BRATS23_DIR, "Log", "SegMamba", run_name)
 logdir = os.path.join(run_root, "trainer")
 wandb_dir = os.path.join(run_root, "wandb")
@@ -84,6 +145,7 @@ def build_config():
         "training": {
             "env": env,
             "max_epoch": max_epoch,
+            "start_epoch": resume_start_epoch,
             "batch_size": batch_size,
             "val_every": val_every,
             "num_gpus": num_gpus,
@@ -91,6 +153,11 @@ def build_config():
             "roi_size": roi_size,
             "augmentation": augmentation,
             "augmenter_backend": augmenter_backend,
+        },
+        "resume": {
+            "enabled": resume_checkpoint_path is not None,
+            "checkpoint_path": resume_checkpoint_path,
+            "start_epoch": resume_start_epoch,
         },
         "settings": settings_config,
     }
@@ -329,9 +396,12 @@ class BraTSTrainer(Trainer):
 
     def convert_labels(self, labels):
         ## TC, WT and ET
-        result = [(labels == 1) | (labels == 3), (labels == 1) | (labels == 3) | (labels == 2), labels == 3]
-
-        return torch.cat(result, dim=1).float()
+        is_label_1 = labels == 1
+        is_label_2 = labels == 2
+        is_label_3 = labels == 3
+        tc = is_label_1 | is_label_3
+        wt = tc | is_label_2
+        return torch.cat((tc, wt, is_label_3), dim=1).float()
 
 
     def get_input(self, batch):
@@ -339,8 +409,7 @@ class BraTSTrainer(Trainer):
         label = batch["seg"]
 
         label = label[:, 0].long()
-        label[label == -1] = 0
-        label[label == 4] = 3
+        label.clamp_(0, 3)
         return image, label
 
     def cal_metric(self, gt, pred, voxel_spacing=(1.0, 1.0, 1.0)):
@@ -353,7 +422,7 @@ class BraTSTrainer(Trainer):
                 self.cal_metric(gt_i, pred_i, voxel_spacing=voxel_spacing)
                 for gt_i, pred_i in zip(gt, pred)
             ]
-            return np.stack(sample_metrics, axis=0).mean(axis=0)
+            return np.nanmean(np.stack(sample_metrics, axis=0), axis=0)
 
         if gt.ndim != spatial_rank:
             gt = np.squeeze(gt)
@@ -406,16 +475,22 @@ class BraTSTrainer(Trainer):
     def validation_end(self, val_outputs):
         dices = val_outputs
 
-        tc, wt, et = dices[0][:, 0].mean(), dices[1][:, 0].mean(), dices[2][:, 0].mean()
-        tc_hd95, wt_hd95, et_hd95 = dices[0][:, 1].mean(), dices[1][:, 1].mean(), dices[2][:, 1].mean()
+        tc = np.nanmean(dices[0][:, 0])
+        wt = np.nanmean(dices[1][:, 0])
+        et = np.nanmean(dices[2][:, 0])
+        tc_hd95 = np.nanmean(dices[0][:, 1])
+        wt_hd95 = np.nanmean(dices[1][:, 1])
+        et_hd95 = np.nanmean(dices[2][:, 1])
         tc, wt, et = scalar_value(tc), scalar_value(wt), scalar_value(et)
         tc_hd95, wt_hd95, et_hd95 = scalar_value(tc_hd95), scalar_value(wt_hd95), scalar_value(et_hd95)
 
         print(f"dices is {tc, wt, et}")
         print(f"hd95 is {tc_hd95, wt_hd95, et_hd95}")
 
-        mean_dice = (tc + wt + et) / 3
-        mean_hd95 = (tc_hd95 + wt_hd95 + et_hd95) / 3
+        mean_dice = scalar_value(np.nanmean([tc, wt, et]))
+        mean_hd95 = scalar_value(np.nanmean([tc_hd95, wt_hd95, et_hd95]))
+        if np.isnan(mean_hd95):
+            mean_hd95 = float("inf")
 
         self.log("tc", tc, step=self.epoch)
         self.log("wt", wt, step=self.epoch)
@@ -468,6 +543,14 @@ if __name__ == "__main__":
                             num_gpus=num_gpus,
                             master_port=17759,
                             training_script=__file__)
+    trainer.start_epoch = resume_start_epoch
+    if resume_checkpoint_path:
+        print(f"Resume checkpoint: {resume_checkpoint_path}")
+        if resume_start_epoch > 0:
+            print(f"Training will continue from epoch {resume_start_epoch} to {max_epoch - 1}.")
+        else:
+            print("Checkpoint filename has no epoch number; weights are loaded and training starts at epoch 0.")
+        trainer.load_state_dict(resume_checkpoint_path, strict=True)
     trainer.set_wandb_run(init_wandb(experiment_config) if trainer.local_rank == 0 else None)
 
     train_ds, val_ds, test_ds = get_train_val_test_loader_from_split_json(data_dir, split_json_file)

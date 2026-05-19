@@ -1,0 +1,34 @@
+AMP enabled: False, precision: fp32, grad_scaler: False
+Loss: DiceFocalTversky
+[34m[1mwandb[0m: Tracking run with wandb version 0.26.0
+[34m[1mwandb[0m: W&B syncing is set to [1m`offline`[0m in this directory. Run [1m`wandb online`[0m or set [1mWANDB_MODE=online[0m to enable cloud syncing.
+[34m[1mwandb[0m: Run data is saved locally in [35m[1m/home/cuc.buithi/BRATS/enhanted-model/Log/SegMamba/segmamba_20260516_093035/wandb/wandb/offline-run-20260516_093037-y5ldt7m5[0m
+[34m[1mwandb[0m: [33mWARNING[0m Saving files without folders. If you want to preserve subdirectories pass base_path to wandb.save, i.e. wandb.save("/mnt/folder/file.h5", base_path="/mnt")
+[34m[1mwandb[0m: [33mWARNING[0m Symlinked 1 file into the W&B run directory; call wandb.save again to sync new files.
+training data is 875
+validation data is 125
+test data is 251
+  0%|                                                       | 0/875 [00:00<?, ?it/s] 10%|████▋                                        | 91/875 [00:00<00:00, 906.57it/s] 21%|█████████▏                                  | 182/875 [00:00<00:00, 886.19it/s] 31%|█████████████▋                              | 271/875 [00:00<00:00, 865.22it/s] 41%|██████████████████                          | 358/875 [00:00<00:00, 852.91it/s] 51%|██████████████████████▎                     | 444/875 [00:00<00:00, 852.46it/s] 61%|██████████████████████████▉                 | 536/875 [00:00<00:00, 872.20it/s] 71%|███████████████████████████████▍            | 624/875 [00:00<00:00, 869.54it/s] 82%|███████████████████████████████████▉        | 714/875 [00:00<00:00, 874.93it/s] 92%|████████████████████████████████████████▍   | 804/875 [00:00<00:00, 880.81it/s]100%|████████████████████████████████████████████| 875/875 [00:01<00:00, 873.44it/s]
+unpacking data ....
+data length is 875
+  0%|                                                       | 0/125 [00:00<?, ?it/s] 74%|█████████████████████████████████            | 92/125 [00:00<00:00, 904.00it/s]100%|████████████████████████████████████████████| 125/125 [00:00<00:00, 894.16it/s]
+unpacking data ....
+data length is 125
+  0%|                                                       | 0/251 [00:00<?, ?it/s] 32%|██████████████▎                              | 80/251 [00:00<00:00, 797.61it/s] 67%|█████████████████████████████▎              | 167/251 [00:00<00:00, 835.03it/s]100%|████████████████████████████████████████████| 251/251 [00:00<00:00, 846.81it/s]
+unpacking data ....
+data length is 251
+augmentation: True
+parameter checksum: 131539.822278, keep model parameters on different processes consistent
+total params: 26.392036M
+trainable params: 26.392036M
+frozen params: 0.000000M
+parameter memory: 105.568144 MB
+trainable parameter memory: 105.568144 MB
+augmenter backend: single-thread
+step number is 75000
+scheduler_type is cosine_with_warmup
+warmup steps is 3750
+  0%|                                                       | 0/250 [00:00<?, ?it/s]Epoch 0:   0%|                                              | 0/250 [00:00<?, ?it/s]Epoch 0:   0%|                       | 0/250 [00:03<?, ?it/s, loss=1.97, lr=2.67e-8]Epoch 0:   0%|               | 1/250 [00:03<15:46,  3.80s/it, loss=1.97, lr=2.67e-8]Epoch 0:   0%|               | 1/250 [00:03<15:46,  3.80s/it, loss=1.97, lr=2.67e-8]Epoch 0:   0%|               | 1/250 [00:05<15:46,  3.80s/it, loss=1.99, lr=5.33e-8]Epoch 0:   1%|               | 2/250 [00:05<10:04,  2.44s/it, loss=1.99, lr=5.33e-8]Epoch 0:   1%|               | 2/250 [00:05<10:04,  2.44s/it, loss=1.99, lr=5.33e-8]Epoch 0:   1%|▏                  | 2/250 [00:09<10:04,  2.44s/it, loss=1.9, lr=8e-8]Epoch 0:   1%|▏                  | 3/250 [00:09<13:57,  3.39s/it, loss=1.9, lr=8e-8]Epoch 0:   1%|▏                  | 3/250 [00:09<13:57,  3.39s/it, loss=1.9, lr=8e-8]Epoch 0:   1%|▏              | 3/250 [00:12<13:57,  3.39s/it, loss=1.91, lr=1.07e-7]Epoch 0:   2%|▏              | 4/250 [00:12<12:45,  3.11s/it, loss=1.91, lr=1.07e-7]Epoch 0:   2%|▏              | 4/250 [00:12<12:45,  3.11s/it, loss=1.91, lr=1.07e-7]Epoch 0:   2%|▏              | 4/250 [00:15<12:45,  3.11s/it, loss=1.97, lr=1.33e-7]Epoch 0:   2%|▎              | 5/250 [00:15<11:50,  2.90s/it, loss=1.97, lr=1.33e-7]Epoch 0:   2%|▎              | 5/250 [00:15<11:50,  2.90s/it, loss=1.97, lr=1.33e-7]Epoch 0:   2%|▎               | 5/250 [00:19<11:50,  2.90s/it, loss=1.97, lr=1.6e-7]Epoch 0:   2%|▍               | 6/250 [00:19<14:05,  3.47s/it, loss=1.97, lr=1.6e-7]Epoch 0:   2%|▍               | 6/250 [00:19<14:05,  3.47s/it, loss=1.97, lr=1.6e-7]Epoch 0:   2%|▍               | 6/250 [00:20<13:45,  3.38s/it, loss=1.97, lr=1.6e-7]
+[34m[1mwandb[0m: You can sync this run to the cloud by running:
+[34m[1mwandb[0m: [1mwandb sync /home/cuc.buithi/BRATS/enhanted-model/Log/SegMamba/segmamba_20260516_093035/wandb/wandb/offline-run-20260516_093037-y5ldt7m5[0m
+[34m[1mwandb[0m: Find logs at: [35m[1m./Log/SegMamba/segmamba_20260516_093035/wandb/wandb/offline-run-20260516_093037-y5ldt7m5/logs[0m

@@ -1,0 +1,22 @@
+{
+  "label": "generate_train_batch B=2",
+  "n": 10,
+  "mean_ms": 22.912683989852667,
+  "median_ms": 22.768549562897533,
+  "min_ms": 20.596474991180003,
+  "max_ms": 26.28940192516893,
+  "std_ms": 2.016812807360994,
+  "data_dir": "SegMamba/data/fullres/train",
+  "stage": "batch",
+  "transform": "noaug",
+  "backend": "single-thread",
+  "batch_size": 2,
+  "patch_size": [
+    96,
+    96,
+    96
+  ],
+  "n_cases": 10,
+  "n_batches": 10,
+  "warmup": 2
+}

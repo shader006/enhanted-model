@@ -1,0 +1,72 @@
+{
+  "data_dir": "SegMamba/data/fullres/train",
+  "cases": [
+    "BraTS2021_00000.npz",
+    "BraTS2021_00002.npz",
+    "BraTS2021_00003.npz",
+    "BraTS2021_00005.npz",
+    "BraTS2021_00006.npz"
+  ],
+  "results": [
+    {
+      "label": "current .npy mmap + .pkl",
+      "n": 5,
+      "mean_ms": 3.1172721879556775,
+      "median_ms": 3.0552030075341463,
+      "min_ms": 2.9435489559546113,
+      "max_ms": 3.3003819407895207,
+      "total_s": 0.015586360939778388,
+      "errors": []
+    },
+    {
+      "label": "current .npy materialized + .pkl",
+      "n": 5,
+      "mean_ms": 25.607581809163094,
+      "median_ms": 24.36784899327904,
+      "min_ms": 22.477988968603313,
+      "max_ms": 29.705265071243048,
+      "total_s": 0.12803790904581547,
+      "errors": []
+    },
+    {
+      "label": ".npy materialized only",
+      "n": 5,
+      "mean_ms": 24.849717784672976,
+      "median_ms": 24.358339025638998,
+      "min_ms": 21.87901397701353,
+      "max_ms": 27.3845789488405,
+      "total_s": 0.12424858892336488,
+      "errors": []
+    },
+    {
+      "label": "compressed .npz + .pkl",
+      "n": 5,
+      "mean_ms": 147.25092882290483,
+      "median_ms": 150.3603410674259,
+      "min_ms": 132.67938198987395,
+      "max_ms": 159.95037998072803,
+      "total_s": 0.7362546441145241,
+      "errors": []
+    },
+    {
+      "label": "HDF5 uncompressed + .pkl",
+      "n": 5,
+      "mean_ms": 26.10562560148537,
+      "median_ms": 25.555163039825857,
+      "min_ms": 24.073350010439754,
+      "max_ms": 28.204470057971776,
+      "total_s": 0.13052812800742686,
+      "errors": []
+    },
+    {
+      "label": "HDF5 gzip-1 + .pkl",
+      "n": 5,
+      "mean_ms": 154.26423461176455,
+      "median_ms": 154.99782003462315,
+      "min_ms": 143.2207189500332,
+      "max_ms": 165.82706605549902,
+      "total_s": 0.7713211730588228,
+      "errors": []
+    }
+  ]
+}

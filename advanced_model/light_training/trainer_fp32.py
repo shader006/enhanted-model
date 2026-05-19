@@ -12,6 +12,31 @@ from monai.utils import set_determinism
 from .sampler import SequentialDistributedSampler, distributed_concat
 from torch.utils.tensorboard import SummaryWriter
 
+def _parameter_stats(model):
+    params = list(model.parameters())
+
+    def count(selected):
+        return sum(p.numel() for p in selected)
+
+    def memory_bytes(selected):
+        return sum(p.numel() * p.element_size() for p in selected)
+
+    trainable = [p for p in params if p.requires_grad]
+    frozen = [p for p in params if not p.requires_grad]
+    return {
+        "total_count": count(params),
+        "trainable_count": count(trainable),
+        "frozen_count": count(frozen),
+        "total_bytes": memory_bytes(params),
+        "trainable_bytes": memory_bytes(trainable),
+    }
+
+
+def _parameter_checksum(model):
+    with torch.no_grad():
+        return sum(float(p.detach().float().sum().cpu()) for p in model.parameters())
+
+
 class dummy_context(object):
     def __enter__(self):
         pass
@@ -336,11 +361,15 @@ class Trainer:
 
         set_determinism(42 + self.local_rank)
         if self.model is not None:
-            print(f"check model parameter: {next(self.model.parameters()).sum()}, keep model parameters on different processes consistent")
-            para = sum(np.prod(list(p.size())) for p in self.model.parameters())
+            checksum = _parameter_checksum(self.model)
+            print(f"parameter checksum: {checksum:.6f}, keep model parameters on different processes consistent")
+            param_stats = _parameter_stats(self.model)
             if self.local_rank == 0:
-                print(f"trainable params: {para / 1_000_000:.6f}M")
-                print(f"parameter memory (fp32): {para * 4 / 1_000_000:.6f} MB")
+                print(f"total params: {param_stats['total_count'] / 1_000_000:.6f}M")
+                print(f"trainable params: {param_stats['trainable_count'] / 1_000_000:.6f}M")
+                print(f"frozen params: {param_stats['frozen_count'] / 1_000_000:.6f}M")
+                print(f"parameter memory: {param_stats['total_bytes'] / 1_000_000:.6f} MB")
+                print(f"trainable parameter memory: {param_stats['trainable_bytes'] / 1_000_000:.6f} MB")
                 
         self.global_step = 0
         if self.env_type == "pytorch":
