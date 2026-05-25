@@ -19,9 +19,15 @@ from pathlib import Path
 import torch.nn as nn
 import torch 
 
+PROJECT_MAMBA_DIR = Path(__file__).resolve().parents[2] / "mamba"
 LOCAL_MAMBA_DIR = Path(__file__).resolve().parents[1] / "mamba"
-if LOCAL_MAMBA_DIR.exists() and str(LOCAL_MAMBA_DIR) not in sys.path:
-    sys.path.insert(0, str(LOCAL_MAMBA_DIR))
+for mamba_dir in (LOCAL_MAMBA_DIR, PROJECT_MAMBA_DIR):
+    mamba_dir_str = str(mamba_dir)
+    if mamba_dir.exists() and mamba_dir_str in sys.path:
+        sys.path.remove(mamba_dir_str)
+for mamba_dir in (LOCAL_MAMBA_DIR, PROJECT_MAMBA_DIR):
+    if mamba_dir.exists():
+        sys.path.insert(0, str(mamba_dir))
 
 SWINDER_DIR = Path(__file__).resolve().parents[2] / "Swin-DER"
 if SWINDER_DIR.exists() and str(SWINDER_DIR) not in sys.path:
@@ -29,7 +35,14 @@ if SWINDER_DIR.exists() and str(SWINDER_DIR) not in sys.path:
 
 from monai.networks.blocks.dynunet_block import UnetOutBlock
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
-from mamba_ssm import Mamba
+try:
+    from mamba_ssm import Mamba, Mamba2, Mamba3
+except ImportError:
+    sys.modules.pop("mamba_ssm", None)
+    if str(PROJECT_MAMBA_DIR) in sys.path:
+        sys.path.remove(str(PROJECT_MAMBA_DIR))
+    sys.path.insert(0, str(PROJECT_MAMBA_DIR))
+    from mamba_ssm import Mamba, Mamba2, Mamba3
 import torch.nn.functional as F 
 
 try:
@@ -166,15 +179,42 @@ class DynamicErf(nn.Module):
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        x = torch.erf(self.alpha * x + self.shift)
-        if not self.elementwise_affine:
-            return x
+        # 1. Standard normalization of input
         if self.channels_last:
-            return x * self.weight + self.bias
+            mean = x.mean(-1, keepdim=True)
+            var = x.var(-1, keepdim=True, unbiased=False)
+            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
+        else:
+            mean = x.mean(1, keepdim=True)
+            var = x.var(1, keepdim=True, unbiased=False)
+            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
+
+        # 2. Clamped learnable parameters to ensure numeric stability and prevent explosion/saturation
+        alpha = torch.clamp(self.alpha, min=1e-4, max=10.0)
+        shift = torch.clamp(self.shift, min=-5.0, max=5.0)
+
+        # 3. Dynamic Erf non-linear transformation
+        x_erf = torch.erf(alpha * x_norm + shift)
+
+        # 4. Re-normalization of Erf output to guarantee unit variance (1.0) and prevent scale decay
+        if self.channels_last:
+            erf_mean = x_erf.mean(-1, keepdim=True)
+            erf_var = x_erf.var(-1, keepdim=True, unbiased=False)
+            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
+        else:
+            erf_mean = x_erf.mean(1, keepdim=True)
+            erf_var = x_erf.var(1, keepdim=True, unbiased=False)
+            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
+
+        # 5. Elementwise affine (weight and bias)
+        if not self.elementwise_affine:
+            return x_erf_norm
+        if self.channels_last:
+            return x_erf_norm * self.weight + self.bias
         view_shape = (1, self.normalized_shape[0]) + (1,) * (x.ndim - 2)
         weight = self.weight.view(view_shape)
         bias = self.bias.view(view_shape)
-        return x * weight + bias
+        return x_erf_norm * weight + bias
 
     def extra_repr(self):
         return (
@@ -242,35 +282,122 @@ class LayerNorm(nn.Module):
             return x
 
 class MambaLayer(nn.Module):
-    def __init__(self, dim, d_state = 16, d_conv = 4, expand = 2, num_slices=None):
+    def __init__(
+        self,
+        dim,
+        d_state=16,
+        d_conv=4,
+        expand=2,
+        num_slices=None,
+        mamba3_headdim=64,
+        mamba3_chunk_size=64,
+        mamba3_mimo_enabled=False,
+        mamba3_mimo_rank=4,
+        mamba3_rope_fraction=0.5,
+        mamba3_outproj_norm_enabled=False,
+        mamba_impl="mamba1",
+        morton_z_enabled=False,
+    ):
         super().__init__()
         self.dim = dim
         self.norm = nn.LayerNorm(dim)
-        self.mamba = Mamba(
-                d_model=dim, # Model dimension d_model
-                d_state=d_state,  # SSM state expansion factor
-                d_conv=d_conv,    # Local convolution width
-                expand=expand,    # Block expansion factor
-                bimamba_type="v3",
-                nslices=num_slices,
-        )
+        self.mamba_impl = str(mamba_impl).lower()
+        self.morton_z_enabled = bool(morton_z_enabled)
+        self._morton_cache = {}
+        if self.mamba_impl == "mamba3":
+            self.mamba = Mamba3(
+                    d_model=dim,
+                    d_state=d_state,
+                    expand=expand,
+                    headdim=self._resolve_headdim(dim=dim, expand=expand, preferred_headdim=mamba3_headdim),
+                    chunk_size=self._resolve_chunk_size(mamba3_chunk_size, mamba3_mimo_enabled, mamba3_mimo_rank),
+                    rope_fraction=mamba3_rope_fraction,
+                    is_outproj_norm=mamba3_outproj_norm_enabled,
+                    is_mimo=mamba3_mimo_enabled,
+                    mimo_rank=mamba3_mimo_rank,
+            )
+        elif self.mamba_impl == "mamba2":
+            self.mamba = Mamba2(
+                d_model=dim,
+                d_state=max(d_state, 16),
+                expand=expand,
+                headdim=self._resolve_headdim(dim=dim, expand=expand, preferred_headdim=mamba3_headdim),
+                chunk_size=max(mamba3_chunk_size, 64),
+                use_mem_eff_path=False,
+            )
+        elif self.mamba_impl in {"mamba", "mamba1", "simple"}:
+            self.mamba = Mamba(
+                d_model=dim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+                use_fast_path=False,
+            )
+        else:
+            raise ValueError(f"Unsupported mamba implementation: {mamba_impl}")
+
+    @staticmethod
+    def _resolve_headdim(dim, expand, preferred_headdim):
+        d_inner = int(dim * expand)
+        preferred_headdim = min(preferred_headdim, d_inner)
+        # Select candidates that are powers of 2 and divisible by 8 (64, 32, 16, 8) 
+        # to ensure compatibility with Tensor Cores vectorized layouts in tilelang JIT compilation.
+        for candidate in (preferred_headdim, 64, 32, 16, 8):
+            if candidate <= d_inner and d_inner % candidate == 0 and candidate % 8 == 0:
+                return candidate
+        # Fallback to standard divisors if no power of 2 divisible by 8 is found
+        for candidate in (64, 48, 32, 24, 16, 12, 8, 4, 2, 1):
+            if candidate <= d_inner and d_inner % candidate == 0:
+                return candidate
+        gcd = math.gcd(d_inner, preferred_headdim)
+        if gcd > 0:
+            return gcd
+        raise ValueError(f"Could not find a valid Mamba3 headdim for dim={dim}, expand={expand}")
+
+    @staticmethod
+    def _resolve_chunk_size(chunk_size, mimo_enabled, mimo_rank):
+        chunk_size = max(1, int(chunk_size))
+        if not mimo_enabled:
+            return chunk_size
+        return max(1, chunk_size // max(1, int(mimo_rank)))
     
-    def forward(self, x):
+    def _get_morton_perm(self, spatial_shape, device):
+        key = tuple(spatial_shape)
+        if key not in self._morton_cache:
+            self._morton_cache[key] = _morton_perm_3d(*spatial_shape, device=torch.device("cpu"))
+        perm, inv = self._morton_cache[key]
+        if perm.device != device:
+            perm = perm.to(device=device)
+            inv = inv.to(device=device)
+        return perm, inv
+
+    def _mamba_forward(self, x):
         B, C = x.shape[:2]
-        x_skip = x
         assert C == self.dim
         n_tokens = x.shape[2:].numel()
         img_dims = x.shape[2:]
         x_flat = x.reshape(B, C, n_tokens).transpose(-1, -2)
+
+        if self.morton_z_enabled:
+            perm, inv = self._get_morton_perm(img_dims, x.device)
+            x_flat = x_flat[:, perm, :].contiguous()
+
         x_norm = self.norm(x_flat)
-        if hasattr(self.mamba, "nslices") and len(img_dims) > 0:
-            self.mamba.nslices = int(img_dims[0])
         x_mamba = self.mamba(x_norm)
 
-        out = x_mamba.transpose(-1, -2).reshape(B, C, *img_dims)
+        if self.morton_z_enabled:
+            x_mamba = x_mamba[:, inv, :].contiguous()
+
+        return x_mamba.transpose(-1, -2).reshape(B, C, *img_dims)
+
+    def forward(self, x):
+        x_skip = x
+
+        # Single-scan Mamba (efficiently leveraging Morton Z-order locality when enabled)
+        out = self._mamba_forward(x)
         out = out + x_skip
-        
         return out
+
     
 class MlpChannel(nn.Module):
     def __init__(self,hidden_size, mlp_dim, use_starrelu=False):
@@ -289,33 +416,40 @@ class GSC(nn.Module):
     def __init__(self, in_channles, use_starrelu=False) -> None:
         super().__init__()
 
-        self.proj = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm = nn.InstanceNorm3d(in_channles)
-        self.nonliner = _make_activation("relu", use_starrelu=use_starrelu)
+        self.proj = Pseudo3DBottleneckBlock(
+            in_channels=in_channles,
+            out_channels=in_channles,
+            norm_name="instance",
+            res_block=True,
+            use_starrelu=use_starrelu,
+        )
 
-        self.proj2 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm2 = nn.InstanceNorm3d(in_channles)
-        self.nonliner2 = _make_activation("relu", use_starrelu=use_starrelu)
+        self.proj2 = Pseudo3DBottleneckBlock(
+            in_channels=in_channles,
+            out_channels=in_channles,
+            norm_name="instance",
+            res_block=True,
+            use_starrelu=use_starrelu,
+        )
 
         self.proj3 = nn.Conv3d(in_channles, in_channles, 1, 1, 0)
         self.norm3 = nn.InstanceNorm3d(in_channles)
         self.nonliner3 = _make_activation("relu", use_starrelu=use_starrelu)
 
-        self.proj4 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm4 = nn.InstanceNorm3d(in_channles)
-        self.nonliner4 = _make_activation("relu", use_starrelu=use_starrelu)
+        self.proj4 = Pseudo3DBottleneckBlock(
+            in_channels=in_channles,
+            out_channels=in_channles,
+            norm_name="instance",
+            res_block=True,
+            use_starrelu=use_starrelu,
+        )
 
     def forward(self, x):
 
         x_residual = x 
 
         x1 = self.proj(x)
-        x1 = self.norm(x1)
-        x1 = self.nonliner(x1)
-
         x1 = self.proj2(x1)
-        x1 = self.norm2(x1)
-        x1 = self.nonliner2(x1)
 
         x2 = self.proj3(x)
         x2 = self.norm3(x2)
@@ -323,16 +457,41 @@ class GSC(nn.Module):
 
         x = x1 * x2
         x = self.proj4(x)
-        x = self.norm4(x)
-        x = self.nonliner4(x)
         
         return x + x_residual
-
+    
 class TSMambaLayer(nn.Module):
-    def __init__(self, dim, num_slices=None, mlp_ratio=2, use_starrelu=False):
+    def __init__(
+        self,
+        dim,
+        num_slices=None,
+        mlp_ratio=2,
+        use_starrelu=False,
+        mamba3_d_state=16,
+        mamba3_headdim=64,
+        mamba3_chunk_size=64,
+        mamba3_mimo_enabled=False,
+        mamba3_mimo_rank=4,
+        mamba3_rope_fraction=0.5,
+        mamba3_outproj_norm_enabled=False,
+        mamba_impl="mamba1",
+        morton_z_enabled=False,
+    ):
         super().__init__()
         self.gsc = GSC(dim, use_starrelu=use_starrelu)
-        self.tom = MambaLayer(dim=dim, num_slices=num_slices)
+        self.tom = MambaLayer(
+            dim=dim,
+            num_slices=num_slices,
+            d_state=mamba3_d_state,
+            mamba3_headdim=mamba3_headdim,
+            mamba3_chunk_size=mamba3_chunk_size,
+            mamba3_mimo_enabled=mamba3_mimo_enabled,
+            mamba3_mimo_rank=mamba3_mimo_rank,
+            mamba3_rope_fraction=mamba3_rope_fraction,
+            mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+            mamba_impl=mamba_impl,
+            morton_z_enabled=morton_z_enabled,
+        )
         self.norm = LayerNorm(dim, eps=1e-6, data_format="channels_first")
         self.mlp = MlpChannel(dim, mlp_ratio * dim, use_starrelu=use_starrelu)
 
@@ -350,6 +509,14 @@ class GSCOnlyLayer(nn.Module):
 
     def forward(self, x):
         return self.gsc(x)
+
+
+class ParameterFreeIdentity(nn.Module):
+    def __init__(self, dim=None, use_starrelu=False, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, x):
+        return x
 
 class FUE(nn.Module):
     def __init__(self, eps=1e-6, use_starrelu=False):
@@ -860,6 +1027,195 @@ class Pseudo3DUpBlock(nn.Module):
         return self.conv_block(out)
 
 
+class VSSM3Block(nn.Module):
+    def __init__(
+        self,
+        dim,
+        d_state=16,
+        mamba3_headdim=64,
+        mamba3_chunk_size=64,
+        mamba3_mimo_enabled=False,
+        mamba3_mimo_rank=4,
+        mamba3_rope_fraction=0.5,
+        mamba3_outproj_norm_enabled=False,
+        use_starrelu=False,
+        morton_z_enabled=False,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.morton_z_enabled = bool(morton_z_enabled)
+        self._morton_cache = {}
+
+        self.norm1 = LayerNorm(dim, eps=1e-6, data_format="channels_first")
+
+        # Branch 1
+        self.in_proj1 = nn.Conv3d(dim, dim, kernel_size=1, bias=False)
+        self.act1 = nn.SiLU()
+
+        # Branch 2
+        self.in_proj2 = nn.Conv3d(dim, dim, kernel_size=1, bias=False)
+        self.dwconv = nn.Conv3d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False)
+        self.pwconv = nn.Conv3d(dim, dim, kernel_size=1, bias=False)
+        self.act2 = nn.SiLU()
+
+        # Mamba 3
+        headdim = MambaLayer._resolve_headdim(dim=dim, expand=2, preferred_headdim=mamba3_headdim)
+        self.mamba3 = Mamba3(
+            d_model=dim,
+            d_state=d_state,
+            expand=2,
+            headdim=headdim,
+            chunk_size=MambaLayer._resolve_chunk_size(mamba3_chunk_size, mamba3_mimo_enabled, mamba3_mimo_rank),
+            rope_fraction=mamba3_rope_fraction,
+            is_outproj_norm=mamba3_outproj_norm_enabled,
+            is_mimo=mamba3_mimo_enabled,
+            mimo_rank=mamba3_mimo_rank,
+        )
+
+        # Merging & Mixing
+        self.norm_mamba = LayerNorm(dim, eps=1e-6, data_format="channels_first")
+        self.out_proj = nn.Conv3d(dim, dim, kernel_size=1, bias=False)
+
+    def _get_morton_perm(self, spatial_shape, device):
+        key = tuple(spatial_shape)
+        if key not in self._morton_cache:
+            self._morton_cache[key] = _morton_perm_3d(*spatial_shape, device=torch.device("cpu"))
+        perm, inv = self._morton_cache[key]
+        if perm.device != device:
+            perm = perm.to(device=device)
+            inv = inv.to(device=device)
+        return perm, inv
+
+    def _mamba_forward(self, x):
+        # Flatten for Mamba 3: [B, C, D, H, W] -> [B, D*H*W, C]
+        B, C, D, H, W = x.shape
+        img_dims = (D, H, W)
+        n_tokens = D * H * W
+        x_flat = x.reshape(B, C, n_tokens).transpose(1, 2).contiguous()
+
+        if self.morton_z_enabled:
+            perm, inv = self._get_morton_perm(img_dims, x.device)
+            x_flat = x_flat[:, perm, :].contiguous()
+
+        x_mamba = self.mamba3(x_flat)
+
+        if self.morton_z_enabled:
+            x_mamba = x_mamba[:, inv, :].contiguous()
+
+        return x_mamba.transpose(1, 2).reshape(B, C, D, H, W).contiguous()
+
+    def forward(self, x):
+        x_skip = x
+        x_norm = self.norm1(x)
+
+        # Branch 1
+        b1 = self.act1(self.in_proj1(x_norm))
+
+        # Branch 2
+        b2 = self.in_proj2(x_norm)
+        b2 = self.act2(self.pwconv(self.dwconv(b2)))
+
+        # Single-scan Mamba (efficiently leveraging Morton Z-order locality when enabled)
+        b2 = self._mamba_forward(b2)
+
+        # Merge pathways
+        b2 = self.norm_mamba(b2)
+        merged = b2 * b1
+
+        # Out projection & residual
+        out = self.out_proj(merged)
+        out = out + x_skip
+        return out
+
+
+
+class VSSUpBlock(nn.Module):
+    def __init__(
+        self,
+        spatial_dims,
+        in_channels,
+        out_channels,
+        upsample_kernel_size,
+        num_slices=None,
+        norm_name="instance",
+        res_block=True,
+        upsample_mode="transconv",
+        use_starrelu=False,
+        mamba3_d_state=16,
+        mamba3_headdim=64,
+        mamba3_chunk_size=64,
+        mamba3_mimo_enabled=False,
+        mamba3_mimo_rank=4,
+        mamba3_rope_fraction=0.5,
+        mamba3_outproj_norm_enabled=False,
+        mamba_impl="mamba1",
+        morton_z_enabled=False,
+        vss_mamba3_enabled=False,
+    ):
+        super().__init__()
+        if spatial_dims != 3:
+            raise ValueError("VSSUpBlock only supports spatial_dims=3.")
+        if upsample_mode == "onsampling":
+            if Onsampling is None:
+                raise ModuleNotFoundError("Onsampling is unavailable. Ensure Swin-DER is present in the project.")
+            self.upsample = Onsampling(
+                spatial_dims=spatial_dims,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                dyscope=True,
+            )
+        else:
+            self.upsample = nn.ConvTranspose3d(
+                in_channels,
+                out_channels,
+                kernel_size=upsample_kernel_size,
+                stride=upsample_kernel_size,
+            )
+        self.channel_reduce = nn.Conv3d(
+            out_channels + out_channels,
+            out_channels,
+            kernel_size=1,
+            bias=False,
+        )
+        self.reduce_norm = _norm3d(out_channels, norm_name)
+        if vss_mamba3_enabled:
+            self.mamba_block = VSSM3Block(
+                dim=out_channels,
+                d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=mamba3_mimo_enabled,
+                mamba3_mimo_rank=mamba3_mimo_rank,
+                mamba3_rope_fraction=mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+                use_starrelu=use_starrelu,
+                morton_z_enabled=morton_z_enabled,
+            )
+        else:
+            self.mamba_block = TSMambaLayer(
+                dim=out_channels,
+                num_slices=num_slices,
+                use_starrelu=use_starrelu,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=mamba3_mimo_enabled,
+                mamba3_mimo_rank=mamba3_mimo_rank,
+                mamba3_rope_fraction=mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
+                morton_z_enabled=morton_z_enabled,
+            )
+
+    def forward(self, inp, skip):
+        out = self.upsample(inp)
+        out = torch.cat((out, skip), dim=1)
+        out = self.channel_reduce(out)
+        out = self.reduce_norm(out)
+        return self.mamba_block(out)
+
+
+
 class TokenKANPseudo3DUpBlock(nn.Module):
     def __init__(
         self,
@@ -1033,6 +1389,50 @@ def _make_decoder_block(
     )
 
 
+def _make_vss_decoder_block(
+    upsample_mode,
+    spatial_dims,
+    in_channels,
+    out_channels,
+    num_slices,
+    norm_name,
+    res_block,
+    use_starrelu=False,
+    mamba3_d_state=16,
+    mamba3_headdim=64,
+    mamba3_chunk_size=64,
+    mamba3_mimo_enabled=False,
+    mamba3_mimo_rank=4,
+    mamba3_rope_fraction=0.5,
+    mamba3_outproj_norm_enabled=False,
+    mamba_impl="mamba1",
+    morton_z_enabled=False,
+    vss_mamba3_enabled=False,
+):
+    return VSSUpBlock(
+        spatial_dims=spatial_dims,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        upsample_kernel_size=2,
+        num_slices=num_slices,
+        norm_name=norm_name,
+        res_block=res_block,
+        upsample_mode=upsample_mode,
+        use_starrelu=use_starrelu,
+        mamba3_d_state=mamba3_d_state,
+        mamba3_headdim=mamba3_headdim,
+        mamba3_chunk_size=mamba3_chunk_size,
+        mamba3_mimo_enabled=mamba3_mimo_enabled,
+        mamba3_mimo_rank=mamba3_mimo_rank,
+        mamba3_rope_fraction=mamba3_rope_fraction,
+        mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+        mamba_impl=mamba_impl,
+        morton_z_enabled=morton_z_enabled,
+        vss_mamba3_enabled=vss_mamba3_enabled,
+    )
+
+
+
 def _make_encoder_block(
     use_unet_3d_conv,
     spatial_dims,
@@ -1087,7 +1487,10 @@ def _feature_depths_from_input_size(input_size, num_stages=4):
 class MambaEncoder(nn.Module):
     def __init__(self, in_chans=1, depths=[2, 2, 2, 2], dims=[48, 96, 192, 384],
                  drop_path_rate=0., layer_scale_init_value=1e-6, out_indices=[0, 1, 2, 3], input_size=None,
-                 mamba_stages=None, use_starrelu=False):
+                 mamba_stages=None, use_starrelu=False, mamba3_d_state=16, mamba3_headdim=64, mamba3_chunk_size=64,
+                 mamba3_mimo_enabled=False, mamba3_mimo_rank=4, mamba3_rope_fraction=0.5,
+                 mamba3_outproj_norm_enabled=False, mamba_impl="mamba1", morton_z_enabled=False,
+                 vss_mamba3_enabled=False):
         super().__init__()
 
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
@@ -1116,12 +1519,43 @@ class MambaEncoder(nn.Module):
                 raise ValueError(f"mamba_stages contains invalid stage indices: {invalid_indices}")
         self.mamba_stages = sorted(mamba_stage_set)
         for i in range(4):
-            block_cls = TSMambaLayer if i in mamba_stage_set else GSCOnlyLayer
+            block_cls = TSMambaLayer if i in mamba_stage_set else ParameterFreeIdentity
+            if block_cls is TSMambaLayer and vss_mamba3_enabled:
+                block_cls = VSSM3Block
+
             stage = nn.Sequential(
                 *[
-                    block_cls(dim=dims[i], num_slices=num_slices_list[i], use_starrelu=False)
-                    if block_cls is TSMambaLayer
-                    else block_cls(dim=dims[i], use_starrelu=use_starrelu)
+                        block_cls(
+                            dim=dims[i],
+                            d_state=mamba3_d_state,
+                            mamba3_headdim=mamba3_headdim,
+                            mamba3_chunk_size=mamba3_chunk_size,
+                            mamba3_mimo_enabled=mamba3_mimo_enabled,
+                            mamba3_mimo_rank=mamba3_mimo_rank,
+                            mamba3_rope_fraction=mamba3_rope_fraction,
+                            mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+                            use_starrelu=use_starrelu,
+                            morton_z_enabled=morton_z_enabled,
+                        )
+                    if block_cls is VSSM3Block
+                    else (
+                        block_cls(
+                            dim=dims[i],
+                            num_slices=num_slices_list[i],
+                            use_starrelu=False,
+                            mamba3_d_state=mamba3_d_state,
+                            mamba3_headdim=mamba3_headdim,
+                            mamba3_chunk_size=mamba3_chunk_size,
+                            mamba3_mimo_enabled=mamba3_mimo_enabled,
+                            mamba3_mimo_rank=mamba3_mimo_rank,
+                            mamba3_rope_fraction=mamba3_rope_fraction,
+                            mamba3_outproj_norm_enabled=mamba3_outproj_norm_enabled,
+                            mamba_impl=mamba_impl,
+                            morton_z_enabled=morton_z_enabled,
+                        )
+                        if block_cls is TSMambaLayer
+                        else block_cls(dim=dims[i], use_starrelu=use_starrelu)
+                    )
                     for j in range(depths[i])
                 ]
             )
@@ -1227,6 +1661,14 @@ class SegMamba(nn.Module):
         spatial_dims = spatial_dims if spatial_dims is not None else _setting_or_default(settings, "SEGMAMBA_SPATIAL_DIMS", 3)
         input_size = input_size if input_size is not None else _setting_or_default(settings, "INPUT_SIZE", [128, 128, 128])
         mamba_stages = mamba_stages if mamba_stages is not None else _setting_or_default(settings, "SEGMAMBA_MAMBA_STAGES", [0, 1, 2, 3])
+        mamba3_d_state = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_D_STATE", 16)
+        mamba3_headdim = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_HEADDIM", 64)
+        mamba3_chunk_size = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_CHUNK_SIZE", 64)
+        mamba3_mimo_enabled = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_MIMO_ENABLED", False)
+        mamba3_mimo_rank = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_MIMO_RANK", 4)
+        mamba3_rope_fraction = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_ROPE_FRACTION", 0.5)
+        mamba3_outproj_norm_enabled = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA3_OUTPROJ_NORM_ENABLED", False)
+        mamba_impl = _setting_or_default(settings, "ADVANCED_SEGMAMBA_MAMBA_IMPL", "mamba1")
         starrelu_enabled = starrelu_enabled if starrelu_enabled is not None else _setting_or_default(settings, "SEGMAMBA_STARRELU", False)
         use_unet_3d_conv = (
             use_unet_3d_conv
@@ -1237,6 +1679,8 @@ class SegMamba(nn.Module):
         derf_norm_enabled = _setting_or_default(settings, "SEGMAMBA_DERF_NORM_ENABLED", False)
         derf_alpha_init_value = _setting_or_default(settings, "SEGMAMBA_DERF_ALPHA_INIT_VALUE", 0.5)
         derf_shift_init_value = _setting_or_default(settings, "SEGMAMBA_DERF_SHIFT_INIT_VALUE", 0.0)
+        vss_decoder_enabled = _setting_or_default(settings, "SEGMAMBA_VSS_DECODER_ENABLED", False)
+        vss_mamba3_enabled = _setting_or_default(settings, "SEGMAMBA_VSS_MAMBA3_ENABLED", False)
 
         self.hidden_size = hidden_size
         self.in_chans = in_chans
@@ -1257,6 +1701,15 @@ class SegMamba(nn.Module):
         self.groupkan_spatial_mixer = str(groupkan_spatial_mixer).lower()
         self.kan_morton_z_enabled = bool(kan_morton_z_enabled)
         self.use_unet_3d_conv = bool(use_unet_3d_conv)
+        self.vss_decoder_enabled = bool(vss_decoder_enabled)
+        self.vss_mamba3_enabled = bool(vss_mamba3_enabled)
+        self.encoder_vss_mamba3_enabled = False
+        self.decoder_vss_mamba3_enabled = self.vss_decoder_enabled
+        self.mamba3_mimo_enabled = bool(mamba3_mimo_enabled)
+        self.mamba3_mimo_rank = int(mamba3_mimo_rank)
+        self.mamba3_rope_fraction = float(mamba3_rope_fraction)
+        self.mamba3_outproj_norm_enabled = bool(mamba3_outproj_norm_enabled)
+
 
         self.spatial_dims = spatial_dims
         self.vit = MambaEncoder(in_chans, 
@@ -1267,6 +1720,16 @@ class SegMamba(nn.Module):
                                 input_size=input_size,
                                 mamba_stages=mamba_stages,
                                 use_starrelu=self.starrelu_enabled,
+                                mamba3_d_state=mamba3_d_state,
+                                mamba3_headdim=mamba3_headdim,
+                                mamba3_chunk_size=mamba3_chunk_size,
+                                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                                mamba_impl=mamba_impl,
+                                morton_z_enabled=self.kan_morton_z_enabled,
+                                vss_mamba3_enabled=self.encoder_vss_mamba3_enabled,
                               )
         self.encoder1 = _make_encoder_block(
             use_unet_3d_conv=self.use_unet_3d_conv,
@@ -1369,86 +1832,189 @@ class SegMamba(nn.Module):
                 **late_encoder_kwargs,
             )
 
-        if use_token_kan:
-            if self.groupkan_enabled:
-                decoder_block_cls = TokenGroupKANPseudo3DUpBlock
-            else:
-                decoder_block_cls = TokenSKANPseudo3DUpBlock if self.skan_enabled else TokenKANPseudo3DUpBlock
-            self.decoder5 = decoder_block_cls(
+        if self.vss_decoder_enabled:
+            self.decoder5 = _make_vss_decoder_block(
+                upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
                 in_channels=self.hidden_size,
                 out_channels=self.feat_size[3],
-                upsample_kernel_size=2,
+                num_slices=self.vit.num_slices_list[3],
                 norm_name=norm_name,
                 res_block=res_block,
-                upsample_mode=upsample_mode,
                 use_starrelu=self.starrelu_enabled,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
                 morton_z_enabled=self.kan_morton_z_enabled,
-                **late_encoder_kwargs,
+                vss_mamba3_enabled=self.decoder_vss_mamba3_enabled,
             )
-            self.decoder4 = decoder_block_cls(
+            self.decoder4 = _make_vss_decoder_block(
+                upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
                 in_channels=self.feat_size[3],
                 out_channels=self.feat_size[2],
-                upsample_kernel_size=2,
+                num_slices=self.vit.num_slices_list[2],
                 norm_name=norm_name,
                 res_block=res_block,
-                upsample_mode=upsample_mode,
                 use_starrelu=self.starrelu_enabled,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
                 morton_z_enabled=self.kan_morton_z_enabled,
-                **late_encoder_kwargs,
+                vss_mamba3_enabled=self.decoder_vss_mamba3_enabled,
+            )
+            self.decoder3 = _make_vss_decoder_block(
+                upsample_mode=upsample_mode,
+                spatial_dims=spatial_dims,
+                in_channels=self.feat_size[2],
+                out_channels=self.feat_size[1],
+                num_slices=self.vit.num_slices_list[1],
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                vss_mamba3_enabled=self.decoder_vss_mamba3_enabled,
+            )
+            self.decoder2 = _make_vss_decoder_block(
+                upsample_mode=upsample_mode,
+                spatial_dims=spatial_dims,
+                in_channels=self.feat_size[1],
+                out_channels=self.feat_size[0],
+                num_slices=self.vit.num_slices_list[0],
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                vss_mamba3_enabled=self.decoder_vss_mamba3_enabled,
+            )
+            self.decoder1 = _make_vss_decoder_block(
+                upsample_mode=upsample_mode,
+                spatial_dims=spatial_dims,
+                in_channels=self.feat_size[0],
+                out_channels=self.feat_size[0],
+                num_slices=self.vit.num_slices_list[0] * 2,
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+                mamba3_d_state=mamba3_d_state,
+                mamba3_headdim=mamba3_headdim,
+                mamba3_chunk_size=mamba3_chunk_size,
+                mamba3_mimo_enabled=self.mamba3_mimo_enabled,
+                mamba3_mimo_rank=self.mamba3_mimo_rank,
+                mamba3_rope_fraction=self.mamba3_rope_fraction,
+                mamba3_outproj_norm_enabled=self.mamba3_outproj_norm_enabled,
+                mamba_impl=mamba_impl,
+                morton_z_enabled=self.kan_morton_z_enabled,
+                vss_mamba3_enabled=self.decoder_vss_mamba3_enabled,
             )
         else:
-            self.decoder5 = _make_decoder_block(
+            if use_token_kan:
+                if self.groupkan_enabled:
+                    decoder_block_cls = TokenGroupKANPseudo3DUpBlock
+                else:
+                    decoder_block_cls = TokenSKANPseudo3DUpBlock if self.skan_enabled else TokenKANPseudo3DUpBlock
+                self.decoder5 = decoder_block_cls(
+                    spatial_dims=spatial_dims,
+                    in_channels=self.hidden_size,
+                    out_channels=self.feat_size[3],
+                    upsample_kernel_size=2,
+                    norm_name=norm_name,
+                    res_block=res_block,
+                    upsample_mode=upsample_mode,
+                    use_starrelu=self.starrelu_enabled,
+                    morton_z_enabled=self.kan_morton_z_enabled,
+                    **late_encoder_kwargs,
+                )
+                self.decoder4 = decoder_block_cls(
+                    spatial_dims=spatial_dims,
+                    in_channels=self.feat_size[3],
+                    out_channels=self.feat_size[2],
+                    upsample_kernel_size=2,
+                    norm_name=norm_name,
+                    res_block=res_block,
+                    upsample_mode=upsample_mode,
+                    use_starrelu=self.starrelu_enabled,
+                    morton_z_enabled=self.kan_morton_z_enabled,
+                    **late_encoder_kwargs,
+                )
+            else:
+                self.decoder5 = _make_decoder_block(
+                    use_unet_3d_conv=self.use_unet_3d_conv,
+                    upsample_mode=upsample_mode,
+                    spatial_dims=spatial_dims,
+                    in_channels=self.hidden_size,
+                    out_channels=self.feat_size[3],
+                    norm_name=norm_name,
+                    res_block=res_block,
+                    use_starrelu=self.starrelu_enabled,
+                )
+                self.decoder4 = _make_decoder_block(
+                    use_unet_3d_conv=self.use_unet_3d_conv,
+                    upsample_mode=upsample_mode,
+                    spatial_dims=spatial_dims,
+                    in_channels=self.feat_size[3],
+                    out_channels=self.feat_size[2],
+                    norm_name=norm_name,
+                    res_block=res_block,
+                    use_starrelu=self.starrelu_enabled,
+                )
+            self.decoder3 = _make_decoder_block(
                 use_unet_3d_conv=self.use_unet_3d_conv,
                 upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
-                in_channels=self.hidden_size,
-                out_channels=self.feat_size[3],
+                in_channels=self.feat_size[2],
+                out_channels=self.feat_size[1],
                 norm_name=norm_name,
                 res_block=res_block,
                 use_starrelu=self.starrelu_enabled,
             )
-            self.decoder4 = _make_decoder_block(
+            self.decoder2 = _make_decoder_block(
                 use_unet_3d_conv=self.use_unet_3d_conv,
                 upsample_mode=upsample_mode,
                 spatial_dims=spatial_dims,
-                in_channels=self.feat_size[3],
-                out_channels=self.feat_size[2],
+                in_channels=self.feat_size[1],
+                out_channels=self.feat_size[0],
                 norm_name=norm_name,
                 res_block=res_block,
                 use_starrelu=self.starrelu_enabled,
             )
-        self.decoder3 = _make_decoder_block(
-            use_unet_3d_conv=self.use_unet_3d_conv,
-            upsample_mode=upsample_mode,
-            spatial_dims=spatial_dims,
-            in_channels=self.feat_size[2],
-            out_channels=self.feat_size[1],
-            norm_name=norm_name,
-            res_block=res_block,
-            use_starrelu=self.starrelu_enabled,
-        )
-        self.decoder2 = _make_decoder_block(
-            use_unet_3d_conv=self.use_unet_3d_conv,
-            upsample_mode=upsample_mode,
-            spatial_dims=spatial_dims,
-            in_channels=self.feat_size[1],
-            out_channels=self.feat_size[0],
-            norm_name=norm_name,
-            res_block=res_block,
-            use_starrelu=self.starrelu_enabled,
-        )
-        self.decoder1 = _make_decoder_block(
-            use_unet_3d_conv=self.use_unet_3d_conv,
-            upsample_mode=upsample_mode,
-            spatial_dims=spatial_dims,
-            in_channels=self.feat_size[0],
-            out_channels=self.feat_size[0],
-            norm_name=norm_name,
-            res_block=res_block,
-            use_starrelu=self.starrelu_enabled,
-        )
+            self.decoder1 = _make_decoder_block(
+                use_unet_3d_conv=self.use_unet_3d_conv,
+                upsample_mode=upsample_mode,
+                spatial_dims=spatial_dims,
+                in_channels=self.feat_size[0],
+                out_channels=self.feat_size[0],
+                norm_name=norm_name,
+                res_block=res_block,
+                use_starrelu=self.starrelu_enabled,
+            )
+
         self.fue1 = FUE(use_starrelu=self.starrelu_enabled)
         self.fue2 = FUE(use_starrelu=self.starrelu_enabled)
         self.fue3 = FUE(use_starrelu=self.starrelu_enabled)
@@ -1472,12 +2038,12 @@ class SegMamba(nn.Module):
 
     def forward(self, x_in):
         outs = self.vit(x_in)
-        enc1 = self.fue1(self.encoder1(x_in))  #z0
-        enc2 = self.fue2(self.encoder2(outs[0])) #z1
-        enc3 = self.fue3(self.encoder3(outs[1])) #z2
-        enc4 = self.fue4(self.encoder4(outs[2])) #z3
-        enc5 = self.fue5(self.encoder5(outs[3])) #z4
-        enc_hidden = self.fue6(self.encoder6(self.bottleneck_downsample(outs[3])))
+        enc1 = self.fue1(self.encoder1(x_in))  #128x128x128 c4
+        enc2 = self.fue2(self.encoder2(outs[0])) #64x64x64 c48
+        enc3 = self.fue3(self.encoder3(outs[1])) #32x32x32 c96
+        enc4 = self.fue4(self.encoder4(outs[2])) #16x16x16 c192
+        enc5 = self.fue5(self.encoder5(outs[3])) #8x8x8 c384
+        enc_hidden = self.fue6(self.encoder6(self.bottleneck_downsample(enc5)))  #4x4x4, c768 
         dec3 = self.decoder5(enc_hidden, enc5)
         dec2 = self.decoder4(dec3, enc4)
         dec1 = self.decoder3(dec2, enc3)

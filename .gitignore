@@ -1,17 +1,60 @@
+# Python temporary files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 .env
 .venv/
 venv/
+ENV/
 
+# Data and dataset files
 data/
 dataset/
-logs/
-prediction_results/
-*.zip
 *.nii.gz
-*.h5
 *.npz
+*.h5
+*.pkl
+
+# Deep learning weights & checkpoints
 *.pt
 *.pth
 *.ckpt
+checkpoints/
+
+# Training logs and outputs
+Log/
+logs/
+wandb/
+prediction_results/
+visualize_outputs/*.csv
+visualize_outputs/*.png
+
+# System and IDE files
+.vscode/
+.idea/
+.DS_Store
+.antigravitycli/
+.understand-anything/
+
+# Temporary / mock test files
+mock_test/

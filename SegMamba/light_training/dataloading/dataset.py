@@ -117,16 +117,55 @@ class MedicalDataset(Dataset):
 
         print(f"data length is {len(self.datalist)}")
         self._memmap_cache = {}
+        self._ram_cache = {}
+
+        # Preload RAM cache if enabled in settings
+        ram_cache_enabled = True
+        ram_cache_preload = False
+        try:
+            from settings import SEGMAMBA_RAM_CACHE_ENABLED, SEGMAMBA_RAM_CACHE_PRELOAD
+            ram_cache_enabled = SEGMAMBA_RAM_CACHE_ENABLED
+            ram_cache_preload = SEGMAMBA_RAM_CACHE_PRELOAD
+        except Exception:
+            pass
+
+        if ram_cache_enabled and ram_cache_preload:
+            print("[*] Preloading dataset into physical memory (RAM cache)...")
+            for p in tqdm(self.datalist, desc="Preloading RAM Cache"):
+                image_path = p.replace(".npz", ".npy")
+                seg_path = p.replace(".npz", "_seg.npy")
+                
+                if os.path.exists(image_path) and image_path not in self._ram_cache:
+                    self._ram_cache[image_path] = np.load(image_path)
+                
+                if not self.test and os.path.exists(seg_path) and seg_path not in self._ram_cache:
+                    self._ram_cache[seg_path] = np.load(seg_path)
+            print(f"[*] Preloaded {len(self._ram_cache)} arrays into RAM.")
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_memmap_cache"] = {}
+        state["_ram_cache"] = {}
         return state
 
     def _load_memmap(self, path):
-        if path not in self._memmap_cache:
-            self._memmap_cache[path] = np.load(path, mmap_mode="r")
-        return self._memmap_cache[path]
+        ram_cache_enabled = True
+        try:
+            from settings import SEGMAMBA_RAM_CACHE_ENABLED
+            ram_cache_enabled = SEGMAMBA_RAM_CACHE_ENABLED
+        except Exception:
+            pass
+
+        if ram_cache_enabled:
+            if not hasattr(self, "_ram_cache"):
+                self._ram_cache = {}
+            if path not in self._ram_cache:
+                self._ram_cache[path] = np.load(path)
+            return self._ram_cache[path]
+        else:
+            if path not in self._memmap_cache:
+                self._memmap_cache[path] = np.load(path, mmap_mode="r")
+            return self._memmap_cache[path]
         
     def load_pkl(self, data_path):
         pass 

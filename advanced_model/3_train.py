@@ -89,11 +89,7 @@ resume_checkpoint_path = parse_resume_checkpoint(sys.argv)
 resume_start_epoch = infer_start_epoch_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else 0
 resume_run_name = infer_run_name_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else None
 
-_data_dir_candidates = [
-    os.path.abspath(os.path.join(BASE_DIR, "..", "data", "fullres", "train")),
-    os.path.abspath(os.path.join(BASE_DIR, "..", "..", "data", "fullres", "train")),
-]
-data_dir = next((path for path in _data_dir_candidates if os.path.isdir(path)), _data_dir_candidates[0])
+data_dir = "/home/21013187/BRATS23/BRATS23/data/fullres/train"
 split_json_file = os.path.abspath(os.path.join(BASE_DIR, "..", "brats23_split_70_10_20.json"))
 run_name = resume_run_name or settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("segmamba_%Y%m%d_%H%M%S")
 run_root = os.path.join(BRATS23_DIR, "Log", "SegMamba", run_name)
@@ -299,6 +295,24 @@ class BraTSTrainer(Trainer):
                                         overlap=0.5)
         self.augmentation = augmentation
         self.augmenter_backend = augmenter_backend
+
+        self.gpu_transforms_enabled = getattr(settings, "SEGMAMBA_GPU_TRANSFORMS_ENABLED", False)
+        if self.gpu_transforms_enabled:
+            import monai.transforms as mt
+            self.gpu_transform_fn = mt.RandAffined(
+                keys=["data", "seg"],
+                prob=0.8,
+                rotate_range=(np.pi/12, np.pi/12, np.pi/12),
+                scale_range=(0.1, 0.1, 0.1),
+                mode=["bilinear", "nearest"],
+                padding_mode="zeros"
+            )
+            self.gpu_transform_fn.set_random_state(seed=settings.REPRO_SEED + self.local_rank)
+            self.augmentation = "onlymirror"
+            print("[*] GPU-Accelerated Spatial Transforms enabled (CPU SpatialTransform disabled).")
+        else:
+            self.gpu_transform_fn = None
+
         from model_segmamba.segmamba import SegMamba
 
         self.model = SegMamba()
@@ -376,6 +390,33 @@ class BraTSTrainer(Trainer):
             })
 
     def training_step(self, batch):
+        if getattr(self, "gpu_transform_fn", None) is not None:
+            any_key = next(iter(self.gpu_transform_fn.keys))
+            batch_size = batch[any_key].shape[0]
+            if batch_size == 1:
+                squeezed_batch = {
+                    k: v.squeeze(0) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                transformed = self.gpu_transform_fn(squeezed_batch)
+                batch = {
+                    k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v
+                    for k, v in transformed.items()
+                }
+            else:
+                samples = []
+                for i in range(batch_size):
+                    sample = {
+                        k: v[i] if isinstance(v, torch.Tensor) else v
+                        for k, v in batch.items()
+                    }
+                    samples.append(self.gpu_transform_fn(sample))
+                batch = {}
+                for k in samples[0].keys():
+                    if isinstance(samples[0][k], torch.Tensor):
+                        batch[k] = torch.stack([s[k] for s in samples], dim=0)
+                    else:
+                        batch[k] = samples[0][k]
         image, label = self.get_input(batch)
         pred = self.model(image)
 

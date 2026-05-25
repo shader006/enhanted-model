@@ -81,15 +81,42 @@ class DynamicErf(nn.Module):
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        x = torch.erf(self.alpha * x + self.shift)
-        if not self.elementwise_affine:
-            return x
+        # 1. Standard normalization of input
         if self.channels_last:
-            return x * self.weight + self.bias
+            mean = x.mean(-1, keepdim=True)
+            var = x.var(-1, keepdim=True, unbiased=False)
+            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
+        else:
+            mean = x.mean(1, keepdim=True)
+            var = x.var(1, keepdim=True, unbiased=False)
+            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
+
+        # 2. Clamped learnable parameters to ensure numeric stability and prevent explosion/saturation
+        alpha = torch.clamp(self.alpha, min=1e-4, max=10.0)
+        shift = torch.clamp(self.shift, min=-5.0, max=5.0)
+
+        # 3. Dynamic Erf non-linear transformation
+        x_erf = torch.erf(alpha * x_norm + shift)
+
+        # 4. Re-normalization of Erf output to guarantee unit variance (1.0) and prevent scale decay
+        if self.channels_last:
+            erf_mean = x_erf.mean(-1, keepdim=True)
+            erf_var = x_erf.var(-1, keepdim=True, unbiased=False)
+            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
+        else:
+            erf_mean = x_erf.mean(1, keepdim=True)
+            erf_var = x_erf.var(1, keepdim=True, unbiased=False)
+            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
+
+        # 5. Elementwise affine (weight and bias)
+        if not self.elementwise_affine:
+            return x_erf_norm
+        if self.channels_last:
+            return x_erf_norm * self.weight + self.bias
         view_shape = (1, self.normalized_shape[0]) + (1,) * (x.ndim - 2)
         weight = self.weight.view(view_shape)
         bias = self.bias.view(view_shape)
-        return x * weight + bias
+        return x_erf_norm * weight + bias
 
     def extra_repr(self):
         return (

@@ -118,10 +118,11 @@ class Trainer:
 
         torch.backends.cudnn.enabled = True
 
-        gpu_count = torch.cuda.device_count()
-        if num_gpus > gpu_count:
-            print("gpu数量不符")
-            os._exit(0)
+        if self.device != "cpu":
+            gpu_count = torch.cuda.device_count()
+            if num_gpus > gpu_count:
+                print("gpu数量不符")
+                os._exit(0)
 
         if env_type == "DDP" or env_type == "ddp":
             self.ddp = True
@@ -291,21 +292,43 @@ class Trainer:
         self.device = self.local_rank
 
     def to_device(self, batch):
+        channels_last_enabled = False
+        try:
+            from settings import SEGMAMBA_CHANNELS_LAST_3D_ENABLED
+            channels_last_enabled = SEGMAMBA_CHANNELS_LAST_3D_ENABLED
+        except Exception:
+            pass
+
         if isinstance(batch, dict):
             for k, v in batch.items():
                 if isinstance(batch[k], np.ndarray):
                     batch[k] = torch.from_numpy(batch[k])
 
                 if (isinstance(batch[k], torch.Tensor) or isinstance(batch[k], torch.FloatTensor)):
-                    batch[k] = batch[k].to(self.device).contiguous()
+                    if channels_last_enabled and "cuda" in str(self.device) and batch[k].ndim == 5:
+                        batch[k] = batch[k].to(self.device).to(memory_format=torch.channels_last_3d)
+                    else:
+                        batch[k] = batch[k].to(self.device).contiguous()
 
         elif isinstance(batch, list) :
             batch = [torch.from_numpy(x) for x in batch if isinstance(x, np.ndarray)]
-            batch = [x.to(self.device).contiguous() for x in batch if (isinstance(x, torch.Tensor) or isinstance(x, torch.FloatTensor))]
+            new_batch = []
+            for x in batch:
+                if isinstance(x, (torch.Tensor, torch.FloatTensor)):
+                    if channels_last_enabled and "cuda" in str(self.device) and x.ndim == 5:
+                        new_batch.append(x.to(self.device).to(memory_format=torch.channels_last_3d))
+                    else:
+                        new_batch.append(x.to(self.device).contiguous())
+                else:
+                    new_batch.append(x)
+            batch = new_batch
 
         elif isinstance(batch, np.ndarray):
             batch = torch.from_numpy(batch)
-            batch = batch.to(self.device).contiguous()
+            if channels_last_enabled and "cuda" in str(self.device) and batch.ndim == 5:
+                batch = batch.to(self.device).to(memory_format=torch.channels_last_3d)
+            else:
+                batch = batch.to(self.device).contiguous()
         
         else :
             print("not support data type")
@@ -319,7 +342,16 @@ class Trainer:
             exit(0)
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
         if self.model is not None:
-            self.model.to(self.device)
+            channels_last_enabled = False
+            try:
+                from settings import SEGMAMBA_CHANNELS_LAST_3D_ENABLED
+                channels_last_enabled = SEGMAMBA_CHANNELS_LAST_3D_ENABLED
+            except Exception:
+                pass
+            if channels_last_enabled and "cuda" in str(self.device):
+                self.model.to(self.device).to(memory_format=torch.channels_last_3d)
+            else:
+                self.model.to(self.device)
             self.model.eval()
         val_outputs = []
         
@@ -451,7 +483,12 @@ class Trainer:
             raise ValueError(f"start_epoch must be >= 0, got {start_epoch}")
         if self.env_type == "pytorch":
             if self.model is not None:
-                self.model.to(self.device)
+                channels_last_enabled = getattr(project_settings, "SEGMAMBA_CHANNELS_LAST_3D_ENABLED", False)
+                if channels_last_enabled and "cuda" in str(self.device):
+                    self.model.to(self.device).to(memory_format=torch.channels_last_3d)
+                    print("[*] Model weights converted to channels_last_3d layout")
+                else:
+                    self.model.to(self.device)
             if self.enable_tensorboard:
                 os.makedirs(self.logdir, exist_ok=True)
                 self.writer = SummaryWriter(self.logdir)
@@ -468,7 +505,12 @@ class Trainer:
             else:
                 self.writer = None
             if self.model is not None:
-                self.model.cuda(self.local_rank)
+                channels_last_enabled = getattr(project_settings, "SEGMAMBA_CHANNELS_LAST_3D_ENABLED", False)
+                if channels_last_enabled:
+                    self.model.cuda(self.local_rank).to(memory_format=torch.channels_last_3d)
+                    print("[*] DDP Model weights converted to channels_last_3d layout")
+                else:
+                    self.model.cuda(self.local_rank)
                 self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
                 self.model = torch.nn.parallel.DistributedDataParallel(self.model,
                                                                     device_ids=[self.local_rank],
