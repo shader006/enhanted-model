@@ -183,8 +183,8 @@ NUM_GPUS = 1
 DEVICE = "cuda:0"
 ENV_TYPE = "pytorch"
 AUGMENTATION = True
-SEGMAMBA_AMP_ENABLED = False
-SEGMAMBA_AMP_PRECISION = "fp32"  # choices: bf16, fp16, fp32
+SEGMAMBA_AMP_ENABLED = True
+SEGMAMBA_AMP_PRECISION = "bf16"  # choices: bf16, fp16, fp32
 SEGMAMBA_MODALITY_DROPOUT_ENABLED = True
 SEGMAMBA_MODALITY_DROPOUT_PROB = 0.3
 SEGMAMBA_MODALITY_DROPOUT_MAX_CHANNELS = 1
@@ -211,6 +211,7 @@ SEGMAMBA_GROUPKAN_CHANNEL_GROUP = 16
 SEGMAMBA_GROUPKAN_SPATIAL_MIXER = "pseudo3d"  # choices: pseudo3d, pwdw
 SEGMAMBA_KAN_MORTON_Z = True
 SEGMAMBA_SPATIAL_DIMS = 3
+SEGMAMBA_DCNV4_ENABLED = False
 SEGMAMBA_MAMBA_STAGES = [0,1, 2]
 SEGMAMBA_STARRELU = False
 SEGMAMBA_ONSAMPLING = True
@@ -480,8 +481,14 @@ def set_global_reproducibility(
 
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
-    torch.backends.cuda.matmul.allow_tf32 = tf32_enabled
-    torch.backends.cudnn.allow_tf32 = tf32_enabled
+    if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+        torch.backends.cuda.matmul.fp32_precision = "tf32" if tf32_enabled else "ieee"
+    else:
+        torch.backends.cuda.matmul.allow_tf32 = tf32_enabled
+    if hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
+        torch.backends.cudnn.conv.fp32_precision = "tf32" if tf32_enabled else "ieee"
+    else:
+        torch.backends.cudnn.allow_tf32 = tf32_enabled
 
     # PyTorch deterministic kernels when available.
     if deterministic:

@@ -58,3 +58,9 @@ visualize_outputs/*.png
 
 # Temporary / mock test files
 mock_test/
+
+# Arguments mistakenly created as files
+--*
+
+# Logs
+*.log

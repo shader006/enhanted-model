@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+os.environ["TRITON_CACHE_AUTOTUNING"] = "1"
 import warnings
 
 warnings.filterwarnings(

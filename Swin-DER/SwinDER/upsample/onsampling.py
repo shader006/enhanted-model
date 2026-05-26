@@ -77,9 +77,9 @@ class Onsampling(nn.Module):
     def _init_pos(self):
         h = torch.arange((-self.scale + 1) / 2, (self.scale - 1) / 2 + 1) / self.scale
         if self.spatial_dims == 2:
-            return torch.stack(torch.meshgrid([h, h])).transpose(1, 2).reshape(1, -1, 1, 1)
+            return torch.stack(torch.meshgrid(h, h, indexing="ij")).transpose(1, 2).reshape(1, -1, 1, 1)
         elif self.spatial_dims == 3:
-            return torch.stack(torch.meshgrid([h, h, h])).transpose(1, 3).reshape(1, -1, 1, 1, 1)
+            return torch.stack(torch.meshgrid(h, h, h, indexing="ij")).transpose(1, 3).reshape(1, -1, 1, 1, 1)
 
     def pixelshuffle(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -141,7 +141,7 @@ class Onsampling(nn.Module):
             offset = offset.view(B, 2, -1, H, W)
             coords_h = torch.arange(H) + 0.5
             coords_w = torch.arange(W) + 0.5
-            coords = torch.stack(torch.meshgrid([coords_w, coords_h])
+            coords = torch.stack(torch.meshgrid(coords_w, coords_h, indexing="ij")
                                  ).transpose(1, 2).unsqueeze(1).unsqueeze(0).type(x.dtype).to(x.device)
             grid = self.pixelshuffle(coords + offset).permute(0, 2, 3, 4, 1).contiguous().flatten(0, 1)
             return grid
@@ -151,7 +151,7 @@ class Onsampling(nn.Module):
             coords_d = torch.arange(D) + 0.5
             coords_h = torch.arange(H) + 0.5
             coords_w = torch.arange(W) + 0.5
-            coords = torch.stack(torch.meshgrid([coords_w, coords_h, coords_d])
+            coords = torch.stack(torch.meshgrid(coords_w, coords_h, coords_d, indexing="ij")
                                  ).transpose(1, 3).unsqueeze(1).unsqueeze(0).type(x.dtype).to(x.device)
             grid = self.pixelshuffle(coords + offset).permute(0, 2, 3, 4, 5, 1).contiguous().flatten(0, 1)
             return grid
