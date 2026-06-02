@@ -90,6 +90,7 @@ class Trainer:
         self.not_call_launch = True
         self.logdir = logdir
         self.scheduler = None 
+        self._pending_training_state = None
         self.model = None
         self.auto_optim = True
         self.warmup = 0.0
@@ -256,23 +257,13 @@ class Trainer:
         if val_ds is None:
             val_data_generator = None 
         else :
-            from light_training.dataloading.base_data_loader import DeterministicPatchDataLoader
-            val_loader = DeterministicPatchDataLoader(val_ds,
-                                                      batch_size=1,
-                                                      patch_size=self.patch_size,
-                                                      oversample_foreground_percent=1.0)
             self.val_number = len(val_ds)
-            
-            val_data_generator = create_limited_len_augmenter(
-                mode=self.augmenter_backend,
-                my_imaginary_length=self.val_number,
-                data_loader=val_loader,
-                transform=val_transforms,
-                num_processes=self.val_process,
-                num_cached=3,
-                seeds=self.augmenter_seeds,
+            val_data_generator = DataLoader(
+                val_ds,
+                batch_size=1,
+                shuffle=False,
+                num_workers=0,
                 pin_memory=True,
-                wait_time=0.02,
             )
         return data_generator, val_data_generator
 
@@ -380,8 +371,9 @@ class Trainer:
                 torch.distributed.barrier()
             outputs_split = None 
             # for idx, batch in tqdm(enumerate(self.val_loader), total=len(self.val_loader)):
+            val_iter = iter(self.val_loader)
             for i in tqdm(range(len(self.val_loader)), total=len(self.val_loader)):
-                batch = next(self.val_loader)
+                batch = next(val_iter)
                 
                 batch = self.before_data_to_device(batch)
 
@@ -542,6 +534,8 @@ class Trainer:
                 for _ in range(self.global_step):
                     self.scheduler.step()
 
+        self._restore_pending_training_state()
+
         if start_epoch >= self.max_epochs:
             if self.local_rank == 0:
                 print(f"start_epoch {start_epoch} >= max_epochs {self.max_epochs}; no epochs left to train.")
@@ -646,13 +640,43 @@ class Trainer:
             for k, v in dict_.items():
                 self.writer.add_scalar(k, scalar_value=v, global_step=step)
                 
+    def _restore_pending_training_state(self):
+        if not self._pending_training_state:
+            return
+
+        state = self._pending_training_state
+        if self.optimizer is not None and state.get("optimizer") is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
+            print("optimizer state is loaded successed.")
+        if self.scheduler is not None and state.get("scheduler") is not None:
+            self.scheduler.load_state_dict(state["scheduler"])
+            print("scheduler state is loaded successed.")
+        if self.grad_scaler is not None and state.get("grad_scaler") is not None:
+            self.grad_scaler.load_state_dict(state["grad_scaler"])
+            print("grad scaler state is loaded successed.")
+
+        self.global_step = int(state.get("global_step", self.global_step))
+        self._pending_training_state = None
+
     def load_state_dict(self, weight_path, strict=True):
-        sd = torch.load(weight_path, map_location="cpu")
-        if isinstance(sd, dict):
+        checkpoint = torch.load(weight_path, map_location="cpu")
+        sd = checkpoint
+        if isinstance(checkpoint, dict):
             for key in ("state_dict", "model_state_dict", "model", "module"):
-                if key in sd and isinstance(sd[key], dict):
-                    sd = sd[key]
+                if key in checkpoint and isinstance(checkpoint[key], dict):
+                    sd = checkpoint[key]
                     break
+
+            training_state_keys = {"optimizer", "scheduler", "grad_scaler", "epoch", "global_step"}
+            if any(key in checkpoint for key in training_state_keys):
+                self._pending_training_state = checkpoint
+                if "epoch" in checkpoint:
+                    self.start_epoch = int(checkpoint["epoch"]) + 1
+                if "best_mean_dice" in checkpoint:
+                    self.best_mean_dice = float(checkpoint["best_mean_dice"])
+                if "best_mean_hd95" in checkpoint:
+                    self.best_mean_hd95 = float(checkpoint["best_mean_hd95"])
+
         new_sd = {}
         for k, v in sd.items():
             k = str(k)

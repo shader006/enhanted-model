@@ -177,7 +177,7 @@ class CompatibleScheduleFreeWrapper:
 # Training settings
 EPOCHS = 300
 BATCH_SIZE = 1
-INPUT_SIZE = [96, 96, 96]  # spatial input size for the model; adjust as needed for memory constraints and model architecture
+INPUT_SIZE = [128, 128, 128]  # spatial input size for the model; adjust as needed for memory constraints and model architecture
 VAL_EVERY = 1
 NUM_GPUS = 1
 DEVICE = "cuda:0"

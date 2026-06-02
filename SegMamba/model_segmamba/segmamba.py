@@ -21,6 +21,7 @@ LOCAL_MAMBA_DIR = Path(__file__).resolve().parents[1] / "mamba"
 if LOCAL_MAMBA_DIR.exists() and str(LOCAL_MAMBA_DIR) not in sys.path:
     sys.path.insert(0, str(LOCAL_MAMBA_DIR))
 
+from einops import rearrange
 from monai.networks.blocks.dynunet_block import UnetOutBlock
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
 from mamba_ssm import Mamba
@@ -193,21 +194,34 @@ class MambaLayer(nn.Module):
                 d_state=d_state,  # SSM state expansion factor
                 d_conv=d_conv,    # Local convolution width
                 expand=expand,    # Block expansion factor
-                bimamba_type="v3",
-                nslices=num_slices,
         )
     
-    def forward(self, x):
+    def mamba_forward(self, x):
         B, C = x.shape[:2]
-        x_skip = x
-        assert C == self.dim
         n_tokens = x.shape[2:].numel()
         img_dims = x.shape[2:]
-        x_flat = x.reshape(B, C, n_tokens).transpose(-1, -2)
-        x_norm = self.norm(x_flat)
-        x_mamba = self.mamba(x_norm)
+        x = x.reshape(B, C, n_tokens).transpose(-1, -2)
+        x = self.norm(x)
+        x = self.mamba(x)
+        x = x.transpose(-1, -2).reshape(B, C, *img_dims)
 
-        out = x_mamba.transpose(-1, -2).reshape(B, C, *img_dims)
+        return x
+
+    def forward(self, x):
+        assert x.shape[1] == self.dim
+        x_skip = x
+
+        out_x_1 = self.mamba_forward(x)
+
+        x_2 = rearrange(x, "b c d w h -> b c w d h")
+        out_x_2 = self.mamba_forward(x_2)
+        out_x_2 = rearrange(out_x_2, "b c w d h -> b c d w h")
+
+        x_3 = rearrange(x, "b c d w h -> b c h w d")
+        out_x_3 = self.mamba_forward(x_3)
+        out_x_3 = rearrange(out_x_3, "b c h w d -> b c d w h")
+
+        out = out_x_1 + out_x_2 + out_x_3
         out = out + x_skip
         
         return out
@@ -229,44 +243,12 @@ class GSC(nn.Module):
     def __init__(self, in_channles) -> None:
         super().__init__()
 
-        self.proj = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm = nn.InstanceNorm3d(in_channles)
-        self.nonliner = nn.ReLU()
-
-        self.proj2 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm2 = nn.InstanceNorm3d(in_channles)
-        self.nonliner2 = nn.ReLU()
-
-        self.proj3 = nn.Conv3d(in_channles, in_channles, 1, 1, 0)
-        self.norm3 = nn.InstanceNorm3d(in_channles)
-        self.nonliner3 = nn.ReLU()
-
-        self.proj4 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
-        self.norm4 = nn.InstanceNorm3d(in_channles)
-        self.nonliner4 = nn.ReLU()
+        self.conv3 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
+        self.conv1 = nn.Conv3d(in_channles, in_channles, 1, 1, 0)
+        self.out_conv3 = nn.Conv3d(in_channles, in_channles, 3, 1, 1)
 
     def forward(self, x):
-
-        x_residual = x 
-
-        x1 = self.proj(x)
-        x1 = self.norm(x1)
-        x1 = self.nonliner(x1)
-
-        x1 = self.proj2(x1)
-        x1 = self.norm2(x1)
-        x1 = self.nonliner2(x1)
-
-        x2 = self.proj3(x)
-        x2 = self.norm3(x2)
-        x2 = self.nonliner3(x2)
-
-        x = x1 * x2
-        x = self.proj4(x)
-        x = self.norm4(x)
-        x = self.nonliner4(x)
-        
-        return x + x_residual
+        return x + self.out_conv3(self.conv3(x) * self.conv1(x))
 
 class TSMambaLayer(nn.Module):
     def __init__(self, dim, num_slices=None, mlp_ratio=2):
@@ -551,7 +533,7 @@ class SegMamba(nn.Module):
         enc3 = self.fue3(self.encoder3(outs[1]))
         enc4 = self.fue4(self.encoder4(outs[2]))
         enc5 = self.fue5(self.encoder5(outs[3]))
-        enc_hidden = self.fue6(self.encoder6(self.bottleneck_downsample(outs[3])))
+        enc_hidden = self.fue6(self.encoder6(self.bottleneck_downsample(enc5)))
         dec3 = self.decoder5(enc_hidden, enc5)
         dec2 = self.decoder4(dec3, enc4)
         dec1 = self.decoder3(dec2, enc3)

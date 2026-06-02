@@ -489,7 +489,7 @@ class BraTSTrainer(Trainer):
     def validation_step(self, batch):
         image, label = self.get_input(batch)
 
-        output = self.model(image)
+        output = self.window_infer(image, self.model)
 
         output = output.argmax(dim=1)
 

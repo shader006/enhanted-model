@@ -257,23 +257,13 @@ class Trainer:
         if val_ds is None:
             val_data_generator = None 
         else :
-            from light_training.dataloading.base_data_loader import DeterministicPatchDataLoader
-            val_loader = DeterministicPatchDataLoader(val_ds,
-                                                      batch_size=1,
-                                                      patch_size=self.patch_size,
-                                                      oversample_foreground_percent=1.0)
             self.val_number = len(val_ds)
-            
-            val_data_generator = create_limited_len_augmenter(
-                mode=self.augmenter_backend,
-                my_imaginary_length=self.val_number,
-                data_loader=val_loader,
-                transform=val_transforms,
-                num_processes=self.val_process,
-                num_cached=3,
-                seeds=self.augmenter_seeds,
+            val_data_generator = DataLoader(
+                val_ds,
+                batch_size=1,
+                shuffle=False,
+                num_workers=0,
                 pin_memory=True,
-                wait_time=0.02,
             )
         return data_generator, val_data_generator
 
@@ -412,8 +402,9 @@ class Trainer:
                 torch.distributed.barrier()
             outputs_split = None 
             # for idx, batch in tqdm(enumerate(self.val_loader), total=len(self.val_loader)):
+            val_iter = iter(self.val_loader)
             for i in tqdm(range(len(self.val_loader)), total=len(self.val_loader)):
-                batch = next(self.val_loader)
+                batch = next(val_iter)
                 
                 batch = self.before_data_to_device(batch)
 

@@ -15,6 +15,7 @@ import json
 import sys
 import re
 import importlib.util
+import glob
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +34,6 @@ from monai.inferers import SlidingWindowInferer
 from light_training.evaluation.metric import dice, hausdorff_distance_95
 from light_training.trainer import Trainer
 from monai.utils import set_determinism
-from light_training.utils.files_helper import save_new_model_and_delete_last
 from monai.losses import DiceCELoss
 
 def _load_project_settings():
@@ -360,6 +360,37 @@ class BraTSTrainer(Trainer):
         print(f"AMP enabled: {self.amp_enabled}, precision: {settings.SEGMAMBA_AMP_PRECISION}, grad_scaler: {self.grad_scaler is not None}")
         print(f"Loss: {settings.SEGMAMBA_LOSS_NAME}")
 
+    def checkpoint_state(self):
+        model = self.model.module if hasattr(self.model, "module") else self.model
+        return {
+            "model": model.state_dict(),
+            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "grad_scaler": self.grad_scaler.state_dict() if self.grad_scaler is not None else None,
+            "epoch": int(getattr(self, "epoch", -1)),
+            "global_step": int(getattr(self, "global_step", 0)),
+            "best_mean_dice": float(self.best_mean_dice),
+            "best_mean_hd95": float(self.best_mean_hd95),
+            "settings": {
+                "EPOCHS": settings.EPOCHS,
+                "BATCH_SIZE": settings.BATCH_SIZE,
+                "INPUT_SIZE": settings.INPUT_SIZE,
+                "LEARNING_RATE": settings.LEARNING_RATE,
+                "WEIGHT_DECAY": settings.WEIGHT_DECAY,
+                "SCHEDULER_NAME": settings.SCHEDULER_NAME,
+                "SEGMAMBA_LOSS_NAME": settings.SEGMAMBA_LOSS_NAME,
+            },
+        }
+
+    def save_checkpoint(self, save_path, delete_symbol=None):
+        save_dir = os.path.dirname(save_path)
+        os.makedirs(save_dir, exist_ok=True)
+        if delete_symbol:
+            for old_path in glob.glob(os.path.join(save_dir, f"{delete_symbol}*.pt")):
+                os.remove(old_path)
+        torch.save(self.checkpoint_state(), save_path)
+        print(f"checkpoint is saved in {save_path}")
+
     def set_wandb_run(self, wandb_run):
         self.wandb_run = wandb_run
 
@@ -447,7 +478,7 @@ class BraTSTrainer(Trainer):
     def validation_step(self, batch):
         image, label = self.get_input(batch)
 
-        output = self.model(image)
+        output = self.window_infer(image, self.model)
 
         output = output.argmax(dim=1)
 
@@ -510,22 +541,28 @@ class BraTSTrainer(Trainer):
             best_reason = "dice" if dice_improved else "hd95_tiebreak"
             self.best_mean_dice = mean_dice
             self.best_mean_hd95 = mean_hd95
-            save_new_model_and_delete_last(self.model,
-                                            os.path.join(model_save_path,
-                                            f"best_model_{best_reason}_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt"),
-                                            delete_symbol="best_model")
+            self.save_checkpoint(
+                os.path.join(
+                    model_save_path,
+                    f"best_model_{best_reason}_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt",
+                ),
+                delete_symbol="best_model",
+            )
             print(f"best model updated by {best_reason}")
         self.log("best_mean_dice", self.best_mean_dice, step=self.epoch)
         self.log("best_mean_hd95", self.best_mean_hd95, step=self.epoch)
 
-        save_new_model_and_delete_last(self.model,
-                                        os.path.join(model_save_path,
-                                        f"final_model_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt"),
-                                        delete_symbol="final_model")
+        self.save_checkpoint(
+            os.path.join(
+                model_save_path,
+                f"final_model_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt",
+            ),
+            delete_symbol="final_model",
+        )
 
 
         if (self.epoch + 1) % 100 == 0:
-            torch.save(self.model.state_dict(), os.path.join(model_save_path, f"tmp_model_ep{self.epoch}_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt"))
+            self.save_checkpoint(os.path.join(model_save_path, f"tmp_model_ep{self.epoch}_dice{mean_dice:.4f}_hd95{mean_hd95:.4f}.pt"))
 
         print(f"mean_dice is {mean_dice}, mean_hd95 is {mean_hd95}")
 
@@ -546,11 +583,11 @@ if __name__ == "__main__":
     trainer.start_epoch = resume_start_epoch
     if resume_checkpoint_path:
         print(f"Resume checkpoint: {resume_checkpoint_path}")
-        if resume_start_epoch > 0:
-            print(f"Training will continue from epoch {resume_start_epoch} to {max_epoch - 1}.")
-        else:
-            print("Checkpoint filename has no epoch number; weights are loaded and training starts at epoch 0.")
         trainer.load_state_dict(resume_checkpoint_path, strict=True)
+        if trainer.start_epoch > 0:
+            print(f"Training will continue from epoch {trainer.start_epoch} to {max_epoch - 1}.")
+        else:
+            print("Checkpoint has no epoch state; weights are loaded and training starts at epoch 0.")
     trainer.set_wandb_run(init_wandb(experiment_config) if trainer.local_rank == 0 else None)
 
     train_ds, val_ds, test_ds = get_train_val_test_loader_from_split_json(data_dir, split_json_file)
