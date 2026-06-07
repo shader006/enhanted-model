@@ -64,3 +64,9 @@ mock_test/
 
 # Logs
 *.log
+
+# Local scratch and profiling files
+scratch/
+advanced_model/advanced_model_profile.py
+advanced_model/advanced_model_layers_profile.py
+advanced_model/debug_vram_analysis.py

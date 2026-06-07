@@ -31,8 +31,6 @@ from model_segmamba.segmamba import (  # noqa: E402
     TokenGroupKANPseudo3DBlock,
     TokenSKANPseudo3DUpBlock,
     TokenSKANPseudo3DBlock,
-    VSSM3Block,
-    VSSUpBlock,
 )
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock  # noqa: E402
 
@@ -204,28 +202,6 @@ def make_block(block_name, channels, spatial, upsample_mode, norm_name, args):
             morton_z_enabled=settings.SEGMAMBA_KAN_MORTON_Z,
             **mamba3_kwargs(args),
         ), (torch.randn(1, channels, *spatial),)
-    if block_name == "vssm3":
-        return VSSM3Block(
-            dim=channels,
-            mamba3_headdim=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_HEADDIM", 64),
-            mamba3_chunk_size=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_CHUNK_SIZE", 64),
-            morton_z_enabled=settings.SEGMAMBA_KAN_MORTON_Z,
-            **mamba3_kwargs(args),
-        ), (torch.randn(1, channels, *spatial),)
-    if block_name == "vssup":
-        low = [max(1, size // 2) for size in spatial]
-        return VSSUpBlock(
-            spatial_dims=3,
-            in_channels=channels * 2,
-            out_channels=channels,
-            upsample_kernel_size=2,
-            norm_name=norm_name,
-            upsample_mode=upsample_mode,
-            mamba_impl=settings.ADVANCED_SEGMAMBA_MAMBA_IMPL,
-            morton_z_enabled=settings.SEGMAMBA_KAN_MORTON_Z,
-            vss_mamba3_enabled=True,
-            **mamba3_kwargs(args),
-        ), (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial))
     if block_name == "tokenskan":
         return TokenSKANPseudo3DBlock(
             channels,
@@ -296,28 +272,6 @@ def make_comparison_cases(channels, spatial, norm_name, args):
         ),
         (torch.randn(1, channels, *spatial),),
     ))
-    cases.append((
-        "vss_m3_no_morton",
-        VSSM3Block(
-            dim=channels,
-            mamba3_headdim=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_HEADDIM", 64),
-            mamba3_chunk_size=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_CHUNK_SIZE", 64),
-            morton_z_enabled=False,
-            **mamba3_kwargs(args),
-        ),
-        (torch.randn(1, channels, *spatial),),
-    ))
-    cases.append((
-        "vss_m3_morton",
-        VSSM3Block(
-            dim=channels,
-            mamba3_headdim=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_HEADDIM", 64),
-            mamba3_chunk_size=getattr(settings, "ADVANCED_SEGMAMBA_MAMBA3_CHUNK_SIZE", 64),
-            morton_z_enabled=True,
-            **mamba3_kwargs(args),
-        ),
-        (torch.randn(1, channels, *spatial),),
-    ))
 
     cases.append((
         "decoder_3d_transconv",
@@ -383,70 +337,6 @@ def make_comparison_cases(channels, spatial, norm_name, args):
             res_block=True,
             upsample_mode="transconv",
             morton_z_enabled=True,
-        ),
-        (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial)),
-    ))
-    cases.append((
-        "decoder_vss_transconv",
-        VSSUpBlock(
-            spatial_dims=3,
-            in_channels=channels * 2,
-            out_channels=channels,
-            upsample_kernel_size=2,
-            norm_name=norm_name,
-            upsample_mode="transconv",
-            mamba_impl=settings.ADVANCED_SEGMAMBA_MAMBA_IMPL,
-            morton_z_enabled=False,
-            vss_mamba3_enabled=True,
-            **mamba3_kwargs(args),
-        ),
-        (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial)),
-    ))
-    cases.append((
-        "decoder_vss_morton_transconv",
-        VSSUpBlock(
-            spatial_dims=3,
-            in_channels=channels * 2,
-            out_channels=channels,
-            upsample_kernel_size=2,
-            norm_name=norm_name,
-            upsample_mode="transconv",
-            mamba_impl=settings.ADVANCED_SEGMAMBA_MAMBA_IMPL,
-            morton_z_enabled=True,
-            vss_mamba3_enabled=True,
-            **mamba3_kwargs(args),
-        ),
-        (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial)),
-    ))
-    cases.append((
-        "decoder_vss_onsampling",
-        VSSUpBlock(
-            spatial_dims=3,
-            in_channels=channels * 2,
-            out_channels=channels,
-            upsample_kernel_size=2,
-            norm_name=norm_name,
-            upsample_mode="onsampling",
-            mamba_impl=settings.ADVANCED_SEGMAMBA_MAMBA_IMPL,
-            morton_z_enabled=False,
-            vss_mamba3_enabled=True,
-            **mamba3_kwargs(args),
-        ),
-        (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial)),
-    ))
-    cases.append((
-        "decoder_vss_morton_onsampling",
-        VSSUpBlock(
-            spatial_dims=3,
-            in_channels=channels * 2,
-            out_channels=channels,
-            upsample_kernel_size=2,
-            norm_name=norm_name,
-            upsample_mode="onsampling",
-            mamba_impl=settings.ADVANCED_SEGMAMBA_MAMBA_IMPL,
-            morton_z_enabled=True,
-            vss_mamba3_enabled=True,
-            **mamba3_kwargs(args),
         ),
         (torch.randn(1, channels * 2, *low), torch.randn(1, channels, *spatial)),
     ))
@@ -520,8 +410,8 @@ def parse_args():
     parser.add_argument(
         "--blocks",
         nargs="+",
-        default=["gsc", "pseudo3d", "mambalayer", "tsmamba", "vssm3", "vssup"],
-        help="Blocks: gsc pseudo3d mambalayer tsmamba vssm3 vssup tokenskan tokengroupkan",
+        default=["gsc", "pseudo3d", "mambalayer", "tsmamba"],
+        help="Blocks: gsc pseudo3d mambalayer tsmamba tokenskan tokengroupkan",
     )
     parser.add_argument("--channels", type=int, default=48)
     parser.add_argument("--spatial", type=int, nargs=3, default=[24, 24, 24])

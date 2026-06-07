@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class FUE(nn.Module):
-    def __init__(self, eps=1e-6, use_starrelu=False):
+    def __init__(self, eps=1e-6):
         super().__init__()
         self.eps = eps
         self.activation = nn.Sigmoid()

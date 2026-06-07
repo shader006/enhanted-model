@@ -13,8 +13,6 @@ PROJECT_DIR = BASE_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from advanced_model.model_segmamba.dcnv4 import DCNv4_3D, HAS_REAL_DCNV4
-
 
 class Conv3DBlock(nn.Module):
     def __init__(self, channels):
@@ -75,25 +73,6 @@ class DepthwiseSeparable3DBlock(nn.Module):
     def forward(self, x):
         return self.block(x) + x
 
-
-class P3DDCNv4Block(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.dcn = DCNv4_3D(channels, kernel_size=3, pad=1)
-        self.norm1 = nn.InstanceNorm3d(channels)
-        self.act1 = nn.GELU()
-        self.depth = nn.Conv3d(channels, channels, kernel_size=(3, 1, 1), padding=(1, 0, 0), bias=False)
-        self.norm2 = nn.InstanceNorm3d(channels)
-        self.act2 = nn.GELU()
-        self.pointwise = nn.Conv3d(channels, channels, 1, bias=False)
-        self.norm3 = nn.InstanceNorm3d(channels)
-        self.act3 = nn.GELU()
-
-    def forward(self, x):
-        out = self.act1(self.norm1(self.dcn(x)))
-        out = self.act2(self.norm2(self.depth(out)))
-        out = self.act3(self.norm3(self.pointwise(out)))
-        return out + x
 
 
 def count_params(module):
@@ -208,7 +187,7 @@ def parse_shape(value):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark Conv3D, P3D, DW, and P3D+DCNv4 blocks on mock 3D tensors.")
+    parser = argparse.ArgumentParser(description="Benchmark Conv3D, P3D, and DW blocks on mock 3D tensors.")
     parser.add_argument("--shape", type=parse_shape, default=(1, 48, 16, 32, 32), help="Input shape B,C,D,H,W.")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--dtype", default="fp32", choices=["fp32", "fp16", "bf16"])
@@ -229,8 +208,6 @@ def main():
         raise ValueError("fp16 CPU benchmark is not supported.")
 
     b, c, d, h, w = args.shape
-    if c % 16 != 0:
-        print("[!] For real DCNv4, channels should usually be divisible by 16. Current C:", c)
 
     x = torch.randn(args.shape, device=device, dtype=dtype)
     if args.channels_last_3d:
@@ -240,7 +217,6 @@ def main():
         "Conv3D": Conv3DBlock(c),
         "P3D": P3DBlock(c),
         "DW": DepthwiseSeparable3DBlock(c),
-        "P3D+DCNv4": P3DDCNv4Block(c),
     }
 
     print(f"device: {device}")
@@ -248,7 +224,6 @@ def main():
     print(f"shape: {args.shape}")
     print(f"mode: {'forward+backward' if args.backward else 'forward'}")
     print(f"channels_last_3d: {args.channels_last_3d}")
-    print(f"HAS_REAL_DCNV4: {HAS_REAL_DCNV4}")
     rows = []
     for name, block in blocks.items():
         block = block.to(device=device, dtype=dtype)

@@ -41,6 +41,9 @@ def _load_unikan_skanlinear():
 SKANLinear = _load_unikan_skanlinear()
 
 def _load_project_settings():
+    if "settings" in sys.modules:
+        return sys.modules["settings"]
+
     settings_path = Path(__file__).resolve().parents[2] / "settings.py"
     if not settings_path.exists():
         return None
@@ -51,12 +54,19 @@ def _load_project_settings():
         sys.path.insert(0, settings_dir)
 
     try:
-        spec = importlib.util.spec_from_file_location("brats23_project_settings", settings_path)
-        if spec is None or spec.loader is None:
-            return None
-        settings = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(settings)
+        import settings
         return settings
+    except ImportError:
+        try:
+            spec = importlib.util.spec_from_file_location("settings", settings_path)
+            if spec is None or spec.loader is None:
+                return None
+            settings_mod = importlib.util.module_from_spec(spec)
+            sys.modules["settings"] = settings_mod
+            spec.loader.exec_module(settings_mod)
+            return settings_mod
+        except Exception:
+            return None
     finally:
         if added_to_path:
             sys.path.remove(settings_dir)
@@ -64,34 +74,7 @@ def _load_project_settings():
 def _setting_or_default(settings, name, default):
     return getattr(settings, name, default) if settings is not None else default
 
-class StarReLU(nn.Module):
-    def __init__(
-        self,
-        scale_value=1.0,
-        bias_value=0.0,
-        scale_learnable=True,
-        bias_learnable=True,
-        mode=None,
-        inplace=False,
-    ):
-        super().__init__()
-        self.inplace = inplace
-        self.relu = nn.ReLU(inplace=inplace)
-        self.scale = nn.Parameter(
-            scale_value * torch.ones(1),
-            requires_grad=scale_learnable,
-        )
-        self.bias = nn.Parameter(
-            bias_value * torch.ones(1),
-            requires_grad=bias_learnable,
-        )
-
-    def forward(self, x):
-        return self.scale * self.relu(x) ** 2 + self.bias
-
 def _make_activation(default_kind, use_starrelu=False):
-    if use_starrelu:
-        return StarReLU()
     if default_kind == "relu":
         return nn.ReLU()
     if default_kind == "gelu":
@@ -100,72 +83,7 @@ def _make_activation(default_kind, use_starrelu=False):
         return nn.Sigmoid()
     raise ValueError(f"Unsupported activation kind: {default_kind}")
 
-class DynamicErf(nn.Module):
-    def __init__(
-        self,
-        normalized_shape,
-        channels_last=True,
-        elementwise_affine=True,
-        alpha_init_value=0.5,
-        shift_init_value=0.0,
-    ):
-        super().__init__()
-        if isinstance(normalized_shape, int):
-            normalized_shape = (normalized_shape,)
-        self.normalized_shape = tuple(normalized_shape)
-        self.channels_last = channels_last
-        self.elementwise_affine = elementwise_affine
-        self.alpha_init_value = alpha_init_value
-        self.shift_init_value = shift_init_value
 
-        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
-        self.shift = nn.Parameter(torch.ones(1) * shift_init_value)
-        if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(self.normalized_shape))
-            self.bias = nn.Parameter(torch.zeros(self.normalized_shape))
-        else:
-            self.register_parameter("weight", None)
-            self.register_parameter("bias", None)
-
-    def forward(self, x):
-        if self.channels_last:
-            mean = x.mean(-1, keepdim=True)
-            var = x.var(-1, keepdim=True, unbiased=False)
-            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
-        else:
-            mean = x.mean(1, keepdim=True)
-            var = x.var(1, keepdim=True, unbiased=False)
-            x_norm = (x - mean) / torch.sqrt(var + 1e-6)
-
-        alpha = torch.clamp(self.alpha, min=1e-4, max=10.0)
-        shift = torch.clamp(self.shift, min=-5.0, max=5.0)
-
-        x_erf = torch.erf(alpha * x_norm + shift)
-
-        if self.channels_last:
-            erf_mean = x_erf.mean(-1, keepdim=True)
-            erf_var = x_erf.var(-1, keepdim=True, unbiased=False)
-            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
-        else:
-            erf_mean = x_erf.mean(1, keepdim=True)
-            erf_var = x_erf.var(1, keepdim=True, unbiased=False)
-            x_erf_norm = (x_erf - erf_mean) / torch.sqrt(erf_var + 1e-6)
-
-        if not self.elementwise_affine:
-            return x_erf_norm
-        if self.channels_last:
-            return x_erf_norm * self.weight + self.bias
-        view_shape = (1, self.normalized_shape[0]) + (1,) * (x.ndim - 2)
-        weight = self.weight.view(view_shape)
-        bias = self.bias.view(view_shape)
-        return x_erf_norm * weight + bias
-
-    def extra_repr(self):
-        return (
-            f"normalized_shape={self.normalized_shape}, channels_last={self.channels_last}, "
-            f"elementwise_affine={self.elementwise_affine}, alpha_init_value={self.alpha_init_value}, "
-            f"shift_init_value={self.shift_init_value}"
-        )
 
 class LayerNorm(nn.Module):
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
@@ -188,35 +106,7 @@ class LayerNorm(nn.Module):
             x = self.weight[:, None, None, None] * x + self.bias[:, None, None, None]
             return x
 
-def _replace_norm_with_derf(module, alpha_init_value=0.5, shift_init_value=0.0):
-    module_output = module
-    if isinstance(module, nn.LayerNorm):
-        module_output = DynamicErf(
-            normalized_shape=module.normalized_shape,
-            channels_last=True,
-            elementwise_affine=module.elementwise_affine,
-            alpha_init_value=alpha_init_value,
-            shift_init_value=shift_init_value,
-        )
-    elif isinstance(module, LayerNorm):
-        module_output = DynamicErf(
-            normalized_shape=module.normalized_shape[0],
-            channels_last=module.data_format == "channels_last",
-            elementwise_affine=True,
-            alpha_init_value=alpha_init_value,
-            shift_init_value=shift_init_value,
-        )
-    for name, child in module.named_children():
-        module_output.add_module(
-            name,
-            _replace_norm_with_derf(
-                child,
-                alpha_init_value=alpha_init_value,
-                shift_init_value=shift_init_value,
-            ),
-        )
-    del module
-    return module_output
+
 
 def _norm3d(channels, norm_name="instance"):
     if isinstance(norm_name, str) and norm_name.lower() in {"batch", "batchnorm", "batchnorm3d"}:

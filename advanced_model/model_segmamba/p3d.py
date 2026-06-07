@@ -29,13 +29,12 @@ class Pseudo3DBottleneckBlock(nn.Module):
         norm_name="instance",
         bottleneck_ratio=4,
         res_block=True,
-        use_starrelu=False,
         morton_z_enabled=False,
     ):
         super().__init__()
         hidden_channels = max(out_channels // bottleneck_ratio, 8)
         self.res_block = res_block
-        activation = _make_activation("gelu", use_starrelu=use_starrelu)
+        activation = _make_activation("gelu")
         self.proj = (
             nn.Identity()
             if in_channels == out_channels
@@ -47,14 +46,14 @@ class Pseudo3DBottleneckBlock(nn.Module):
             activation,
             nn.Conv3d(hidden_channels, hidden_channels, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
             _norm3d(hidden_channels, norm_name),
-            _make_activation("gelu", use_starrelu=use_starrelu),
+            _make_activation("gelu"),
             nn.Conv3d(hidden_channels, hidden_channels, kernel_size=(3, 1, 1), padding=(1, 0, 0), bias=False),
             _norm3d(hidden_channels, norm_name),
-            _make_activation("gelu", use_starrelu=use_starrelu),
+            _make_activation("gelu"),
             nn.Conv3d(hidden_channels, out_channels, kernel_size=1, bias=False),
             _norm3d(out_channels, norm_name),
         )
-        self.act = _make_activation("gelu", use_starrelu=use_starrelu)
+        self.act = _make_activation("gelu")
 
     def forward(self, x):
         out = self.conv(x)
@@ -73,7 +72,6 @@ class Pseudo3DUpBlock(nn.Module):
         norm_name="instance",
         res_block=True,
         upsample_mode="transconv",
-        use_starrelu=False,
     ):
         super().__init__()
         if spatial_dims != 3:
@@ -99,7 +97,6 @@ class Pseudo3DUpBlock(nn.Module):
             out_channels,
             norm_name=norm_name,
             res_block=res_block,
-            use_starrelu=use_starrelu,
         )
 
     def forward(self, inp, skip):
@@ -135,49 +132,7 @@ def _make_decoder_block(
     out_channels,
     norm_name,
     res_block,
-    use_starrelu=False,
 ):
-    settings = _load_project_settings()
-    dcnv4_enabled = bool(_setting_or_default(settings, "SEGMAMBA_DCNV4_ENABLED", False))
-
-    if dcnv4_enabled:
-        from .tsmamba import DCNBlock
-        class DCNUpBlock(nn.Module):
-            def __init__(self, spatial_dims, in_channels, out_channels, upsample_kernel_size, upsample_mode, use_starrelu):
-                super().__init__()
-                if upsample_mode == "onsampling":
-                    from SwinDER.upsample.onsampling import Onsampling
-                    self.upsample = Onsampling(
-                        spatial_dims=spatial_dims,
-                        in_channels=in_channels,
-                        out_channels=out_channels,
-                        dyscope=True,
-                    )
-                else:
-                    self.upsample = nn.ConvTranspose3d(
-                        in_channels,
-                        out_channels,
-                        kernel_size=upsample_kernel_size,
-                        stride=upsample_kernel_size,
-                    )
-                self.channel_reduce = nn.Conv3d(out_channels + out_channels, out_channels, kernel_size=1, bias=False)
-                self.reduce_norm = _norm3d(out_channels, norm_name)
-                self.gsc = DCNBlock(out_channels, use_starrelu=use_starrelu)
-            
-            def forward(self, inp, skip):
-                out = self.upsample(inp)
-                out = torch.cat((out, skip), dim=1)
-                out = self.reduce_norm(self.channel_reduce(out))
-                return self.gsc(out)
-
-        return DCNUpBlock(
-            spatial_dims=spatial_dims,
-            in_channels=in_channels,
-            out_channels=out_channels,
-            upsample_kernel_size=2,
-            upsample_mode=upsample_mode,
-            use_starrelu=use_starrelu,
-        )
 
     if use_unet_3d_conv:
         return UnetrUpBlock(
@@ -197,7 +152,6 @@ def _make_decoder_block(
         norm_name=norm_name,
         res_block=res_block,
         upsample_mode=upsample_mode,
-        use_starrelu=use_starrelu,
     )
 
 
@@ -208,21 +162,7 @@ def _make_encoder_block(
     out_channels,
     norm_name,
     res_block,
-    use_starrelu=False,
 ):
-    settings = _load_project_settings()
-    dcnv4_enabled = bool(_setting_or_default(settings, "SEGMAMBA_DCNV4_ENABLED", False))
-
-    if dcnv4_enabled:
-        from .tsmamba import DCNBlock
-        if in_channels == out_channels:
-            return DCNBlock(out_channels, use_starrelu=use_starrelu)
-        return nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=False),
-            _norm3d(out_channels, norm_name),
-            _make_activation("gelu", use_starrelu=use_starrelu),
-            DCNBlock(out_channels, use_starrelu=use_starrelu),
-        )
 
     if use_unet_3d_conv:
         return UnetrBasicBlock(
@@ -239,5 +179,4 @@ def _make_encoder_block(
         out_channels=out_channels,
         norm_name=norm_name,
         res_block=res_block,
-        use_starrelu=use_starrelu,
     )

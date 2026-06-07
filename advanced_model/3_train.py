@@ -1,6 +1,7 @@
 import os
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 os.environ["TRITON_CACHE_AUTOTUNING"] = "1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import warnings
 
 warnings.filterwarnings(
@@ -292,7 +293,7 @@ class BraTSTrainer(Trainer):
     def __init__(self, env_type, max_epochs, batch_size, device="cpu", val_every=1, num_gpus=1, logdir="./logs/", master_ip='localhost', master_port=17750, training_script="train.py"):
         super().__init__(env_type, max_epochs, batch_size, device, val_every, num_gpus, logdir, master_ip, master_port, training_script)
         self.window_infer = SlidingWindowInferer(roi_size=roi_size,
-                                        sw_batch_size=1,
+                                        sw_batch_size=4,
                                         overlap=0.5)
         self.augmentation = augmentation
         self.augmenter_backend = augmenter_backend
