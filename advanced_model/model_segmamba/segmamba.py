@@ -262,7 +262,6 @@ class SegMamba(nn.Module):
             layer_scale_init_value=layer_scale_init_value,
             input_size=input_size,
             mamba_stages=mamba_stages,
-            use_starrelu=False,
             mamba3_d_state=mamba3_d_state,
             mamba3_headdim=mamba3_headdim,
             mamba3_chunk_size=mamba3_chunk_size,
@@ -342,7 +341,6 @@ class SegMamba(nn.Module):
                 out_channels=self.feat_size[3],
                 norm_name=norm_name,
                 res_block=res_block,
-                use_starrelu=False,
                 morton_z_enabled=self.kan_morton_z_enabled,
                 **late_encoder_kwargs,
             )
@@ -365,7 +363,6 @@ class SegMamba(nn.Module):
                 out_channels=self.hidden_size,
                 norm_name=norm_name,
                 res_block=res_block,
-                use_starrelu=False,
                 morton_z_enabled=self.kan_morton_z_enabled,
                 **late_encoder_kwargs,
             )
@@ -383,7 +380,6 @@ class SegMamba(nn.Module):
                 norm_name=norm_name,
                 res_block=res_block,
                 upsample_mode=upsample_mode,
-                use_starrelu=False,
                 morton_z_enabled=self.kan_morton_z_enabled,
                 **late_encoder_kwargs,
             )
@@ -395,7 +391,6 @@ class SegMamba(nn.Module):
                 norm_name=norm_name,
                 res_block=res_block,
                 upsample_mode=upsample_mode,
-                use_starrelu=False,
                 morton_z_enabled=self.kan_morton_z_enabled,
                 **late_encoder_kwargs,
             )

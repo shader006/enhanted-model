@@ -70,3 +70,6 @@ scratch/
 advanced_model/advanced_model_profile.py
 advanced_model/advanced_model_layers_profile.py
 advanced_model/debug_vram_analysis.py
+
+# Test metrics CSV outputs
+test_metrics_*.csv

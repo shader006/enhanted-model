@@ -41,7 +41,6 @@ def _make_groupkan_spatial_mixer(
         norm_name=norm_name,
         bottleneck_ratio=bottleneck_ratio,
         res_block=False,
-        use_starrelu=False,
     )
 
 
@@ -53,7 +52,6 @@ class TokenKANPseudo3DBlock(nn.Module):
         norm_name="instance",
         bottleneck_ratio=4,
         res_block=True,
-        use_starrelu=False,
         morton_z_enabled=False,
         linear_cls=None,
         linear_name="KANLinear",
@@ -81,7 +79,6 @@ class TokenKANPseudo3DBlock(nn.Module):
             norm_name=norm_name,
             bottleneck_ratio=bottleneck_ratio,
             res_block=False,
-            use_starrelu=False,
         )
         self.token_norm3 = nn.LayerNorm(out_channels)
         self.fc2 = self.linear_cls(out_channels, out_channels)
@@ -91,10 +88,9 @@ class TokenKANPseudo3DBlock(nn.Module):
             norm_name=norm_name,
             bottleneck_ratio=bottleneck_ratio,
             res_block=False,
-            use_starrelu=False,
         )
         self.out_norm = _norm3d(out_channels, norm_name)
-        self.act = _make_activation("gelu", use_starrelu=False)
+        self.act = _make_activation("gelu")
         self.morton_z_enabled = bool(morton_z_enabled)
         self._morton_cache = {}
 
@@ -279,7 +275,6 @@ class TokenGroupKANPseudo3DBlock(TokenKANPseudo3DBlock):
         norm_name="instance",
         bottleneck_ratio=4,
         res_block=True,
-        use_starrelu=False,
         morton_z_enabled=False,
         active_group=16,
         channel_group=16,
@@ -340,7 +335,7 @@ class TokenGroupKANPseudo3DBlock(TokenKANPseudo3DBlock):
             spatial_mixer=spatial_mixer,
         )
         self.out_norm = _norm3d(out_channels, norm_name)
-        self.act = _make_activation("gelu", use_starrelu=False)
+        self.act = _make_activation("gelu")
         self.morton_z_enabled = bool(morton_z_enabled)
         self._morton_cache = {}
 
@@ -377,7 +372,6 @@ class TokenKANPseudo3DUpBlock(nn.Module):
         norm_name="instance",
         res_block=True,
         upsample_mode="transconv",
-        use_starrelu=False,
         morton_z_enabled=False,
     ):
         super().__init__()
@@ -404,7 +398,6 @@ class TokenKANPseudo3DUpBlock(nn.Module):
             out_channels,
             norm_name=norm_name,
             res_block=res_block,
-            use_starrelu=use_starrelu,
             morton_z_enabled=morton_z_enabled,
         )
 
@@ -424,7 +417,6 @@ class TokenSKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
         norm_name="instance",
         res_block=True,
         upsample_mode="transconv",
-        use_starrelu=False,
         morton_z_enabled=False,
     ):
         nn.Module.__init__(self)
@@ -451,7 +443,6 @@ class TokenSKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
             out_channels,
             norm_name=norm_name,
             res_block=res_block,
-            use_starrelu=use_starrelu,
             morton_z_enabled=morton_z_enabled,
         )
 
@@ -466,7 +457,6 @@ class TokenGroupKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
         norm_name="instance",
         res_block=True,
         upsample_mode="transconv",
-        use_starrelu=False,
         morton_z_enabled=False,
         active_group=16,
         channel_group=16,
@@ -498,7 +488,6 @@ class TokenGroupKANPseudo3DUpBlock(TokenKANPseudo3DUpBlock):
             out_channels,
             norm_name=norm_name,
             res_block=res_block,
-            use_starrelu=use_starrelu,
             morton_z_enabled=morton_z_enabled,
             active_group=active_group,
             channel_group=channel_group,

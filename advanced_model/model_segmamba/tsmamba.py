@@ -14,7 +14,7 @@ from .utils import (
 
 
 class GSC(nn.Module):
-    def __init__(self, in_channles, mamba_impl="mamba1", use_starrelu=False) -> None:
+    def __init__(self, in_channles, mamba_impl="mamba1") -> None:
         super().__init__()
         self.mamba_impl = str(mamba_impl).lower()
 
@@ -136,10 +136,10 @@ except ModuleNotFoundError:
 
 
 class MlpChannel(nn.Module):
-    def __init__(self, hidden_size, mlp_dim, use_starrelu=False):
+    def __init__(self, hidden_size, mlp_dim):
         super().__init__()
         self.fc1 = nn.Conv3d(hidden_size, mlp_dim, 1)
-        self.act = _make_activation("gelu", use_starrelu=use_starrelu)
+        self.act = _make_activation("gelu")
         self.fc2 = nn.Conv3d(mlp_dim, hidden_size, 1)
 
     def forward(self, x):
@@ -150,7 +150,7 @@ class MlpChannel(nn.Module):
 
 
 class ParameterFreeIdentity(nn.Module):
-    def __init__(self, dim, use_starrelu=False):
+    def __init__(self, dim):
         super().__init__()
 
     def forward(self, x):
@@ -305,7 +305,6 @@ class TSMambaLayer(nn.Module):
         dim,
         num_slices=None,
         mlp_ratio=2,
-        use_starrelu=False,
         mamba3_d_state=16,
         mamba3_headdim=64,
         mamba3_chunk_size=64,
@@ -317,7 +316,7 @@ class TSMambaLayer(nn.Module):
         morton_z_enabled=False,
     ):
         super().__init__()
-        self.gsc = GSC(dim, mamba_impl=mamba_impl, use_starrelu=use_starrelu)
+        self.gsc = GSC(dim, mamba_impl=mamba_impl)
         self.tom = MambaLayer(
             dim=dim,
             num_slices=num_slices,
@@ -332,7 +331,7 @@ class TSMambaLayer(nn.Module):
             morton_z_enabled=morton_z_enabled,
         )
         self.norm = LayerNorm(dim, eps=1e-6, data_format="channels_first")
-        self.mlp = MlpChannel(dim, mlp_ratio * dim, use_starrelu=use_starrelu)
+        self.mlp = MlpChannel(dim, mlp_ratio * dim)
 
     def forward(self, x):
         x = self.gsc(x)
@@ -359,7 +358,6 @@ class MambaEncoder(nn.Module):
         out_indices=[0, 1, 2, 3],
         input_size=None,
         mamba_stages=None,
-        use_starrelu=False,
         mamba3_d_state=16,
         mamba3_headdim=64,
         mamba3_chunk_size=64,
@@ -403,7 +401,6 @@ class MambaEncoder(nn.Module):
                     block_cls(
                         dim=dims[i],
                         num_slices=num_slices_list[i],
-                        use_starrelu=use_starrelu,
                         mamba3_d_state=mamba3_d_state,
                         mamba3_headdim=mamba3_headdim,
                         mamba3_chunk_size=mamba3_chunk_size,
@@ -415,7 +412,7 @@ class MambaEncoder(nn.Module):
                         morton_z_enabled=morton_z_enabled,
                     )
                     if block_cls is TSMambaLayer
-                    else block_cls(dim=dims[i], use_starrelu=use_starrelu)
+                    else block_cls(dim=dims[i])
                     for j in range(depths[i])
                 ]
             )

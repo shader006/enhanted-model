@@ -74,7 +74,7 @@ def _load_project_settings():
 def _setting_or_default(settings, name, default):
     return getattr(settings, name, default) if settings is not None else default
 
-def _make_activation(default_kind, use_starrelu=False):
+def _make_activation(default_kind):
     if default_kind == "relu":
         return nn.ReLU()
     if default_kind == "gelu":
