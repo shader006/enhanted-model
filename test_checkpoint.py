@@ -33,13 +33,13 @@ import time
 
 import settings
 from light_training.dataloading.dataset import MedicalDataset, _resolve_split_paths
-from light_training.evaluation.metric import dice, hausdorff_distance_95
+from light_training.evaluation.metric import dice, hausdorff_distance_95, jaccard
 
 
 # ==============================================================================
 # PASTE YOUR CHECKPOINT PATH HERE
 # ==============================================================================
-CHECKPOINT_PATH = "/home/21013187/BRATS23/BRATS23/enhanted-model/Log/SegMamba/advanced model 128/checkpoints/best_model_hd95_tiebreak_dice0.9017_hd953.0459.pt"
+CHECKPOINT_PATH = "/home/cuc.buithi/BRATS/enhanted-model/Log/SwinUNETR/swinunetr_20260608_021614/checkpoints/best_model_dice_dice0.9034_hd953.0672.pt"
 DEFAULT_DATA_DIR = os.path.join(BRATS23_DIR, "data", "fullres", "train")
 DEFAULT_SPLIT_JSON = os.path.join(BRATS23_DIR, "brats23_split_70_10_20.json")
 
@@ -99,16 +99,48 @@ def load_state_dict(model, checkpoint_path):
     model.load_state_dict(state_dict, strict=True)
 
 
-def build_model(device):
-    try:
-        from model_segmamba.segmamba import SegMamba
-    except (ImportError, RuntimeError, OSError) as exc:
-        raise RuntimeError(
-            "Could not import SegMamba. This model depends on the local mamba/triton "
-            "stack, so run it in a CUDA-capable environment with the correct conda env."
-        ) from exc
+def detect_model_type(checkpoint_path):
+    abs_path = os.path.abspath(checkpoint_path)
+    parts = abs_path.split(os.sep)
+    for p in parts:
+        p_lower = p.lower()
+        if "swinunetr" in p_lower:
+            return "swinunetr"
+        if "segmamba" in p_lower:
+            return "segmamba"
+    
+    filename = os.path.basename(abs_path).lower()
+    if "swinunetr" in filename:
+        return "swinunetr"
+    if "segmamba" in filename:
+        return "segmamba"
+        
+    return "segmamba"
 
-    return SegMamba().to(device)
+
+def build_model(model_name, device):
+    model_name = model_name.lower()
+    if model_name == "segmamba":
+        try:
+            from model_segmamba.segmamba import SegMamba
+        except (ImportError, RuntimeError, OSError) as exc:
+            raise RuntimeError(
+                "Could not import SegMamba. This model depends on the local mamba/triton "
+                "stack, so run it in a CUDA-capable environment with the correct conda env."
+            ) from exc
+        return SegMamba().to(device)
+    elif model_name == "swinunetr":
+        from monai.networks.nets import SwinUNETR
+        in_chans = getattr(settings, "SEGMAMBA_IN_CHANS", 4)
+        out_chans = getattr(settings, "SEGMAMBA_OUT_CHANS", 4)
+        return SwinUNETR(
+            in_channels=in_chans,
+            out_channels=out_chans,
+            feature_size=48,
+            use_checkpoint=True
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown model architecture: {model_name}. Supported models: 'segmamba', 'swinunetr'")
 
 
 def convert_brats_regions(labels):
@@ -147,10 +179,10 @@ def case_metric(gt, pred, voxel_spacing=(1.0, 1.0, 1.0)):
     gt = np.asarray(gt).astype(bool)
     pred = np.asarray(pred).astype(bool)
     if pred.sum() > 0 and gt.sum() > 0:
-        return float(dice(pred, gt)), float(hausdorff_distance_95(pred, gt, voxel_spacing=voxel_spacing))
+        return float(dice(pred, gt)), float(hausdorff_distance_95(pred, gt, voxel_spacing=voxel_spacing)), float(jaccard(pred, gt))
     if pred.sum() == 0 and gt.sum() == 0:
-        return 1.0, 0.0
-    return 0.0, 50.0
+        return 1.0, 0.0, 1.0
+    return 0.0, 50.0, 0.0
 
 
 def get_case_name(properties, fallback):
@@ -181,7 +213,7 @@ def get_test_dataset_from_split_json(data_dir, split_json_file):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate a SegMamba checkpoint on the split-json test set.")
+    parser = argparse.ArgumentParser(description="Evaluate a checkpoint on the split-json test set.")
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
     parser.add_argument("--split_json", default=DEFAULT_SPLIT_JSON)
     parser.add_argument("--device", default=settings.DEVICE)
@@ -194,68 +226,14 @@ def parse_args():
     parser.add_argument("--postprocess", action="store_true", default=True, help="Apply Connected Component post-processing filtering")
     parser.add_argument("--no_postprocess", action="store_false", dest="postprocess", help="Disable post-processing")
     parser.add_argument("--min_volume", type=int, default=100, help="Minimum volume (voxel count) for Connected Component filtering")
-    return parser.parse_args()
+        model_type = args.model
+        if model_type == "auto":
+            model_type = detect_model_type(checkpoint_path)
+            print(f"Auto-detected model type: {model_type}")
+        else:
+            print(f"Using explicitly specified model type: {model_type}")
 
-
-def main():
-    args = parse_args()
-    checkpoint_path = args.checkpoint
-    
-    # Try to load config.json dynamically to restore exact training architecture / settings
-    config_settings = None
-    checkpoint_dir = os.path.dirname(os.path.abspath(checkpoint_path))
-    parent_dir = os.path.dirname(checkpoint_dir)
-    config_path = os.path.join(parent_dir, "config.json")
-    if os.path.exists(config_path):
-        try:
-            print(f"Found config.json at {config_path}. Loading training settings...")
-            with open(config_path, "r") as f:
-                config_data = json.load(f)
-            
-            # Update paths from config.json if not explicitly provided in command line arguments
-            paths = config_data.get("paths", {})
-            if "data_dir" in paths and not any(arg.startswith("--data_dir") for arg in sys.argv):
-                args.data_dir = paths["data_dir"]
-                print(f"Using data directory from config.json: {args.data_dir}")
-            if "split_json_file" in paths and not any(arg.startswith("--split_json") for arg in sys.argv):
-                args.split_json = paths["split_json_file"]
-                print(f"Using split JSON from config.json: {args.split_json}")
-
-            config_settings = config_data.get("settings", {})
-            for key, val in config_settings.items():
-                if hasattr(settings, key):
-                    setattr(settings, key, val)
-            print(f"Dynamically updated settings from config.json.")
-            
-            # Override args.roi_size if defined in config.json and not explicitly provided in argv
-            if "INPUT_SIZE" in config_settings:
-                if not any(arg.startswith("--roi_size") for arg in sys.argv):
-                    args.roi_size = config_settings["INPUT_SIZE"]
-                    print(f"Using ROI size from config.json: {args.roi_size}")
-        except Exception as e:
-            print(f"Warning: Failed to load config.json: {e}")
-
-    log_dir = create_test_log_dir(checkpoint_path, args.log_dir)
-    log_file, log_handle, original_stdout, original_stderr = start_logging(log_dir)
-    try:
-        print(f"Test log dir: {log_dir}")
-        print(f"Console log: {log_file}")
-        print(f"Checkpoint: {checkpoint_path}")
-        print(f"Post-processing (CCA): {args.postprocess}")
-        if args.postprocess:
-            print(f"Minimum component volume: {args.min_volume} voxels")
-
-        if not os.path.isfile(checkpoint_path):
-            raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint_path}")
-
-        settings.set_global_reproducibility()
-        set_determinism(settings.REPRO_SEED)
-
-        device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
-        if str(device) != args.device:
-            print(f"CUDA is not available; using {device}.")
-
-        model = build_model(device)
+        model = build_model(model_type, device)
         load_state_dict(model, checkpoint_path)
         model.eval()
 
@@ -350,33 +328,14 @@ def main():
 
                 case_values = {"case": case_name}
                 for region_index, region_name in enumerate(region_names):
-                    dsc, hd95 = case_metric(
+                    dsc, hd95, iou = case_metric(
                         gt_regions[region_index],
                         pred_regions[region_index],
                         voxel_spacing=voxel_spacing
                     )
                     case_values[f"{region_name}_dice"] = dsc
                     case_values[f"{region_name}_hd95"] = hd95
-                case_values["inference_time"] = elapsed_time
-                case_values["vram_peak"] = peak_vram
-                case_values["num_params"] = num_params
-                case_values["flops"] = flops
-                rows.append(case_values)
-                mean_dice = np.mean([case_values[f"{name}_dice"] for name in region_names])
-                mean_hd95 = np.mean([case_values[f"{name}_hd95"] for name in region_names])
-                progress.set_postfix(
-                    case=case_name,
-                    mean_dice=f"{mean_dice:.4f}",
-                    mean_hd95=f"{mean_hd95:.4f}",
-                )
-
-        # Calculate summary statistics
-        summary_rows = []
-        
-        # 1. Mean
-        mean_row = {"case": "Mean"}
-        for name in region_names:
-            mean_row[f"{name}_dice"] = float(np.mean([row[f'{name}_dice'] for row in rows]))
+            mean_row[f"{name}_iou"] = float(np.mean([row[f'{name}_iou'] for row in rows]))
             
             # Exclude 50.0 values for HD95 Mean
             hd95_vals = [row[f'{name}_hd95'] for row in rows]
@@ -393,22 +352,7 @@ def main():
         std_row = {"case": "Std"}
         for name in region_names:
             std_row[f"{name}_dice"] = float(np.std([row[f'{name}_dice'] for row in rows]))
-            
-            # Exclude 50.0 values for HD95 Std
-            hd95_vals = [row[f'{name}_hd95'] for row in rows]
-            valid_hd95_vals = [v for v in hd95_vals if v != 50.0]
-            std_row[f"{name}_hd95"] = float(np.std(valid_hd95_vals)) if valid_hd95_vals else 0.0
-            
-        std_row["inference_time"] = float(np.std([row["inference_time"] for row in rows]))
-        std_row["vram_peak"] = float(np.std([row["vram_peak"] for row in rows]))
-        std_row["num_params"] = ""
-        std_row["flops"] = ""
-        summary_rows.append(std_row)
-        
-        # 3. Median
-        median_row = {"case": "Median"}
-        for name in region_names:
-            median_row[f"{name}_dice"] = float(np.median([row[f'{name}_dice'] for row in rows]))
+            median_row[f"{name}_iou"] = float(np.median([row[f'{name}_iou'] for row in rows]))
             
             # Exclude 50.0 values for HD95 Median
             hd95_vals = [row[f'{name}_hd95'] for row in rows]
@@ -428,23 +372,7 @@ def main():
             valid_hd95_vals = [v for v in hd95_vals if v != 50.0]
             det_rate = len(valid_hd95_vals) / len(rows) if rows else 0.0
             det_row[f"{name}_dice"] = ""
-            det_row[f"{name}_hd95"] = f"{det_rate * 100:.2f}%"
-        det_row["inference_time"] = ""
-        det_row["vram_peak"] = ""
-        det_row["num_params"] = ""
-        det_row["flops"] = ""
-        summary_rows.append(det_row)
-
-        output_csv = args.output_csv
-        if output_csv is None:
-            checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
-            suffix = f"_cca{args.min_volume}" if args.postprocess else ""
-            output_csv = os.path.join(BASE_DIR, f"test_metrics_{checkpoint_name}{suffix}.csv")
-        os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
-
-        fieldnames = ["case"]
-        for name in region_names:
-            fieldnames.extend([f"{name}_dice", f"{name}_hd95"])
+            fieldnames.extend([f"{name}_dice", f"{name}_iou", f"{name}_hd95"])
         fieldnames.extend(["inference_time", "vram_peak", "num_params", "flops"])
         with open(output_csv, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -460,11 +388,7 @@ def main():
             det_rate = det_row[f"{name}_hd95"]
             print(
                 f"{name}: dice={mean_row[f'{name}_dice']:.4f} (std={std_row[f'{name}_dice']:.4f}, median={median_row[f'{name}_dice']:.4f}), "
-                f"hd95={mean_row[f'{name}_hd95']:.4f} (std={std_row[f'{name}_hd95']:.4f}, median={median_row[f'{name}_hd95']:.4f}) [Detection Rate: {det_rate}]"
-            )
-            
-        # Compute case-average metrics first to get correct global statistics
-        case_mean_dices = [np.mean([row[f'{name}_dice'] for name in region_names]) for row in rows]
+        case_mean_ious = [np.mean([row[f'{name}_iou'] for name in region_names]) for row in rows]
         
         # Exclude 50.0 values from case-averaged HD95 values
         case_mean_hd95s = []
@@ -482,12 +406,7 @@ def main():
         global_std_dice = float(np.std(case_mean_dices))
         global_median_dice = float(np.median(case_mean_dices))
         
-        global_mean_hd95 = float(np.mean(case_mean_hd95s)) if case_mean_hd95s else 50.0
-        global_std_hd95 = float(np.std(case_mean_hd95s)) if case_mean_hd95s else 0.0
-        global_median_hd95 = float(np.median(case_mean_hd95s)) if case_mean_hd95s else 50.0
-        
-        print(
-            f"Mean: dice={global_mean_dice:.4f} (std={global_std_dice:.4f}, median={global_median_dice:.4f}), "
+            f"iou={global_mean_iou:.4f} (std={global_std_iou:.4f}, median={global_median_iou:.4f}), "
             f"hd95={global_mean_hd95:.4f} (std={global_std_hd95:.4f}, median={global_median_hd95:.4f}) [Overall Detection Rate: {global_det_rate * 100:.2f}%]"
         )
         print(

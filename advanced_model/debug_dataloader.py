@@ -27,7 +27,7 @@ def main():
     from light_training.augment.multi_processor import create_limited_len_augmenter
     from light_training.augment.train_augment import get_train_transforms
 
-    data_dir = "/home/21013187/BRATS23/BRATS23/data/fullres/train"
+    data_dir = "/home/cuc.buithi/BRATS/data/fullres/train"
     split_json_file = os.path.abspath(os.path.join(BASE_DIR, "..", "brats23_split_70_10_20.json"))
 
     print("Loading dataset from split JSON...")

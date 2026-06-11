@@ -1,3 +1,10 @@
+try:
+    import triton.language as tl
+    if not hasattr(tl, "make_tensor_descriptor") and hasattr(tl, "_experimental_make_tensor_descriptor"):
+        tl.make_tensor_descriptor = tl._experimental_make_tensor_descriptor
+except ImportError:
+    pass
+
 import math
 import random
 
@@ -5,174 +12,6 @@ import numpy as np
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 
-try:
-    from MSAM.optimizer.msam import MSAM
-except ModuleNotFoundError:
-    MSAM = None
-
-try:
-    from lion_pytorch import Lion as ExternalLion
-except ModuleNotFoundError:
-    ExternalLion = None
-
-try:
-    from schedulefree import ScheduleFreeWrapper
-except ModuleNotFoundError:
-    ScheduleFreeWrapper = None
-
-
-def _ensure_schedulefree_base_state(optimizer):
-    """Initialize state entries expected by some optimizers before Schedule-Free adds its own keys."""
-    optimizer_name = optimizer.__class__.__name__.lower()
-    is_adam_like = optimizer_name in {"adam", "adamw"}
-    is_lion_like = "lion" in optimizer_name
-
-    if not (is_adam_like or is_lion_like):
-        return
-
-    for group in optimizer.param_groups:
-        amsgrad = bool(group.get("amsgrad", False))
-        for param in group["params"]:
-            if param.grad is None:
-                continue
-            state = optimizer.state[param]
-            if is_adam_like:
-                state.setdefault("step", torch.zeros((), dtype=torch.float32, device=param.device))
-                if "exp_avg" not in state:
-                    state["exp_avg"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-                if "exp_avg_sq" not in state:
-                    state["exp_avg_sq"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-                if amsgrad and "max_exp_avg_sq" not in state:
-                    state["max_exp_avg_sq"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-            elif is_lion_like and "exp_avg" not in state:
-                state["exp_avg"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-
-
-class CompatibleScheduleFreeWrapper:
-    """Compatibility wrapper around schedulefree that preserves Adam/AdamW/Lion state initialization."""
-
-    def __init__(
-        self,
-        base,
-        weight_decay_at_y=0.0,
-        momentum=0.9,
-        weight_lr_power=2,
-        r=0,
-    ):
-        self.base = base
-        self.weight_decay_at_y = weight_decay_at_y
-        self.weight_lr_power = weight_lr_power
-        self.r = r
-        self.momentum = momentum
-        self.train_mode = False
-
-    def add_param_group(self, param_group):
-        return self.base.add_param_group(param_group)
-
-    def load_state_dict(self, state_dict):
-        return self.base.load_state_dict(state_dict)
-
-    def state_dict(self):
-        return self.base.state_dict()
-
-    def zero_grad(self, set_to_none=True):
-        return self.base.zero_grad(set_to_none)
-
-    @property
-    def param_groups(self):
-        return self.base.param_groups
-
-    @property
-    def state(self):
-        return self.base.state
-
-    @torch.no_grad()
-    def eval(self):
-        if self.train_mode:
-            for group in self.param_groups:
-                for p in group["params"]:
-                    state = self.state[p]
-                    if "z" in state:
-                        p.lerp_(end=state["z"], weight=1 - 1 / self.momentum)
-        self.train_mode = False
-
-    @torch.no_grad()
-    def train(self):
-        if not self.train_mode:
-            for group in self.param_groups:
-                for p in group["params"]:
-                    state = self.state[p]
-                    if "z" in state:
-                        p.lerp_(end=state["z"], weight=1 - self.momentum)
-        self.train_mode = True
-
-    @staticmethod
-    def swap(x, y):
-        x.view(torch.uint8).bitwise_xor_(y.view(torch.uint8))
-        y.view(torch.uint8).bitwise_xor_(x.view(torch.uint8))
-        x.view(torch.uint8).bitwise_xor_(y.view(torch.uint8))
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if not self.train_mode:
-            raise Exception(
-                "Optimizer was not in train mode when step is called. "
-                "Please insert .train() and .eval() calls on the optimizer."
-            )
-
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        _ensure_schedulefree_base_state(self.base)
-
-        for group in self.param_groups:
-            lr = group["lr"]
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                state = self.state[p]
-
-                if "z" not in state:
-                    state["z"] = torch.clone(p, memory_format=torch.preserve_format)
-
-                z = state["z"]
-
-                if self.weight_decay_at_y != 0.0:
-                    z.sub_(p, alpha=lr * self.weight_decay_at_y)
-                    p.sub_(p, alpha=lr * self.weight_decay_at_y * (1 - self.momentum))
-
-                p.lerp_(end=z, weight=1 - 1 / self.momentum)
-                self.swap(z, p)
-
-        self.base.step()
-
-        for group in self.param_groups:
-            weight_lr_power = self.weight_lr_power
-            r = self.r
-            k = group.get("k", 0)
-            d = group.get("d", 1.0)
-            lr = group["lr"] * d
-            lr_max = group["lr_max"] = max(lr, group.get("lr_max", 0))
-
-            weight = ((k + 1) ** r) * (lr_max**weight_lr_power)
-            weight_sum = group["weight_sum"] = group.get("weight_sum", 0.0) + weight
-            ckp1 = weight / weight_sum
-
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-
-                state = self.state[p]
-                z = state["z"]
-                self.swap(z, p)
-                p.lerp_(end=z, weight=ckp1)
-                p.lerp_(end=state["z"], weight=1 - self.momentum)
-
-            group["k"] = k + 1
-
-        return loss
 
 # Training settings
 EPOCHS = 300
@@ -198,19 +37,19 @@ SEGMAMBA_HIDDEN_SIZE = 768
 SEGMAMBA_DROP_PATH_RATE = 0
 SEGMAMBA_LAYER_SCALE_INIT_VALUE = 1e-6
 SEGMAMBA_NORM_NAME = "instance"
-SEGMAMBA_3D_CONV = True
+SEGMAMBA_3D_CONV = False
 SEGMAMBA_RES_BLOCK = True
 SEGMAMBA_KAN = False
-SEGMAMBA_SKAN = False
+SEGMAMBA_SKAN = True
 SEGMAMBA_GROUPKAN = False
 SEGMAMBA_GROUPKAN_ACTIVE_GROUP = 16
 SEGMAMBA_GROUPKAN_CHANNEL_GROUP = 16
 SEGMAMBA_GROUPKAN_SPATIAL_MIXER = "pseudo3d"  # choices: pseudo3d, pwdw
-SEGMAMBA_KAN_MORTON_Z = False
+SEGMAMBA_KAN_MORTON_Z = True
 SEGMAMBA_SPATIAL_DIMS = 3
-SEGMAMBA_MAMBA_STAGES = [0,1, 2,3]
-SEGMAMBA_ONSAMPLING = False
-ADVANCED_SEGMAMBA_MAMBA_IMPL = "mamba1"  # choices: mamba1, mamba2, mamba3
+SEGMAMBA_MAMBA_STAGES = [0, 1, 2]
+SEGMAMBA_ONSAMPLING = True
+ADVANCED_SEGMAMBA_MAMBA_IMPL = "mamba3"  # choices: mamba1, mamba2, mamba3
 ADVANCED_SEGMAMBA_MAMBA3_MIMO_ENABLED = False
 
 ADVANCED_SEGMAMBA_MAMBA3_MIMO_RANK = 4
@@ -243,9 +82,6 @@ SEGMAMBA_CHANNELS_LAST_3D_ENABLED = True
 OPTIMIZER_NAME = "AdamW"
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-5
-SCHEDULE_FREE_ENABLED = False
-SCHEDULE_FREE_MOMENTUM = 0.9
-SCHEDULE_FREE_WEIGHT_DECAY_AT_Y = 0.0
 SEGMAMBA_LOSS_NAME = "DiceFocalTversky"  # choices: DiceCE, CE, DiceFocalTversky
 SEGMAMBA_DICE_LOSS_WEIGHT = 1.0
 SEGMAMBA_CE_LOSS_WEIGHT = 1.0
@@ -256,10 +92,6 @@ SEGMAMBA_FOCAL_TVERSKY_GAMMA = 4.0 / 3.0
 SEGMAMBA_LOSS_INCLUDE_BACKGROUND = False
 SGD_MOMENTUM = 0.99
 SGD_NESTEROV = True
-LION_BETAS = (0.9, 0.99)
-MSAM_MOMENTUM = 0.9
-MSAM_NESTEROV = False
-MSAM_RHO = 0.05
 
 # Scheduler settings
 SCHEDULER_NAME = "cosine_with_warmup"
@@ -306,56 +138,10 @@ def build_optimizer(model):
             momentum=SGD_MOMENTUM,
             nesterov=SGD_NESTEROV,
         )
-    elif OPTIMIZER_NAME == "Lion":
-        lion_cls = getattr(torch.optim, "Lion", None) or ExternalLion
-        if lion_cls is None:
-            raise ModuleNotFoundError(
-                "Lion optimizer is unavailable. Install lion-pytorch or use a PyTorch build that provides torch.optim.Lion."
-            )
-        optimizer = lion_cls(
-            params=model.parameters(),
-            lr=LEARNING_RATE,
-            weight_decay=WEIGHT_DECAY,
-            betas=LION_BETAS,
-        )
-    elif OPTIMIZER_NAME == "MSAM":
-        if MSAM is None:
-            raise ModuleNotFoundError("MSAM optimizer is not importable from the current Python path.")
-        optimizer = MSAM(
-            params=model.parameters(),
-            lr=LEARNING_RATE,
-            momentum=MSAM_MOMENTUM,
-            weight_decay=WEIGHT_DECAY,
-            nesterov=MSAM_NESTEROV,
-            rho=MSAM_RHO,
-        )
     else:
         raise ValueError(f"Unsupported optimizer: {OPTIMIZER_NAME}")
 
-    if SCHEDULE_FREE_ENABLED:
-        if ScheduleFreeWrapper is None:
-            raise ModuleNotFoundError(
-                "Schedule-Free is enabled but the 'schedulefree' package is unavailable. Install it with: pip install schedulefree"
-            )
-        optimizer = CompatibleScheduleFreeWrapper(
-            optimizer,
-            momentum=SCHEDULE_FREE_MOMENTUM,
-            weight_decay_at_y=SCHEDULE_FREE_WEIGHT_DECAY_AT_Y,
-        )
-
     return optimizer
-
-
-def set_optimizer_train_mode(optimizer):
-    """Switch optimizer to train mode when supported by the optimizer implementation."""
-    if hasattr(optimizer, "train") and callable(optimizer.train):
-        optimizer.train()
-
-
-def set_optimizer_eval_mode(optimizer):
-    """Switch optimizer to eval mode when supported by the optimizer implementation."""
-    if hasattr(optimizer, "eval") and callable(optimizer.eval):
-        optimizer.eval()
 
 
 def _build_cosine_with_warmup(optimizer, num_warmup_steps, num_training_steps, last_epoch=-1):
@@ -398,7 +184,6 @@ def _build_poly_with_warmup(optimizer, num_warmup_steps, num_training_steps, lr_
 
 class PolyLRScheduler(torch.optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, initial_lr, max_steps, exponent=0.9, current_step=None):
-        self.optimizer = optimizer
         self.initial_lr = initial_lr
         self.max_steps = max_steps
         self.exponent = exponent
@@ -417,8 +202,6 @@ class PolyLRScheduler(torch.optim.lr_scheduler._LRScheduler):
 
 def build_scheduler(optimizer, num_training_steps=None, num_epochs=None):
     """Build LR scheduler paired with optimizer from project settings."""
-    if SCHEDULE_FREE_ENABLED:
-        return None
     if SCHEDULER_NAME in (None, "none", "None"):
         return None
     if SCHEDULER_NAME == "cosine_with_warmup":
@@ -514,3 +297,16 @@ def seed_worker(worker_id):
 def get_swinder_upsample():
     """Return the effective Swin-DER decoder upsampling mode from settings."""
     return "onsampling" if SWINDER_ONSAMPLING else SWINDER_UPSAMPLE
+
+
+def set_optimizer_train_mode(optimizer):
+    """Switch optimizer to train mode when supported by the optimizer implementation."""
+    if hasattr(optimizer, "train") and callable(optimizer.train):
+        optimizer.train()
+
+
+def set_optimizer_eval_mode(optimizer):
+    """Switch optimizer to eval mode when supported by the optimizer implementation."""
+    if hasattr(optimizer, "eval") and callable(optimizer.eval):
+        optimizer.eval()
+

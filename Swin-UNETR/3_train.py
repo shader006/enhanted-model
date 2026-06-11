@@ -21,14 +21,17 @@ from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BRATS23_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+ADVANCED_MODEL_DIR = os.path.join(BRATS23_DIR, "advanced_model")
+
 sys.path = [
     path
     for path in sys.path
-    if os.path.abspath(path or os.getcwd()) != BASE_DIR
+    if os.path.abspath(path or os.getcwd()) not in (BASE_DIR, ADVANCED_MODEL_DIR)
 ]
 if BRATS23_DIR not in sys.path:
     sys.path.insert(0, BRATS23_DIR)
 sys.path.append(BASE_DIR)
+sys.path.append(ADVANCED_MODEL_DIR)
 
 from light_training.dataloading.dataset import get_train_val_test_loader_from_split_json
 from monai.inferers import SlidingWindowInferer
@@ -74,7 +77,7 @@ def parse_resume_checkpoint(argv):
 def infer_run_name_from_checkpoint(checkpoint_path):
     parts = os.path.normpath(checkpoint_path).split(os.sep)
     for i in range(len(parts) - 2):
-        if parts[i] == "Log" and parts[i + 1] == "SegMamba":
+        if parts[i] == "Log" and parts[i + 1] == "SwinUNETR":
             return parts[i + 2]
     return None
 
@@ -92,9 +95,9 @@ resume_start_epoch = infer_start_epoch_from_checkpoint(resume_checkpoint_path) i
 resume_run_name = infer_run_name_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else None
 
 data_dir = "/home/cuc.buithi/BRATS/data/fullres/train"
-split_json_file = os.path.abspath(os.path.join(BASE_DIR, "..", "brats23_split_70_10_20.json"))
-run_name = resume_run_name or settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("segmamba_%Y%m%d_%H%M%S")
-run_root = os.path.join(BRATS23_DIR, "Log", "SegMamba", run_name)
+split_json_file = os.path.abspath(os.path.join(BRATS23_DIR, "brats23_split_70_10_20.json"))
+run_name = resume_run_name or settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("swinunetr_%Y%m%d_%H%M%S")
+run_root = os.path.join(BRATS23_DIR, "Log", "SwinUNETR", run_name)
 logdir = os.path.join(run_root, "trainer")
 wandb_dir = os.path.join(run_root, "wandb")
 config_json_file = os.path.join(run_root, "config.json")
@@ -315,9 +318,14 @@ class BraTSTrainer(Trainer):
         else:
             self.gpu_transform_fn = None
 
-        from model_segmamba.segmamba import SegMamba
+        from monai.networks.nets import SwinUNETR
 
-        self.model = SegMamba()
+        self.model = SwinUNETR(
+            in_channels=settings.SEGMAMBA_IN_CHANS,
+            out_channels=settings.SEGMAMBA_OUT_CHANS,
+            feature_size=48,
+            use_checkpoint=True
+        )
 
         self.patch_size = roi_size
         self.best_mean_dice = 0.0
