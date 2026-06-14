@@ -250,7 +250,7 @@ class Trainer:
             transform=tr_transforms,
             num_processes=self.train_process,
             num_cached=6,
-            seeds=self.augmenter_seeds,
+            seeds=self.augmenter_seeds[:self.train_process] if self.augmenter_seeds is not None else None,
             pin_memory=True,
             wait_time=0.02,
         )
@@ -262,7 +262,7 @@ class Trainer:
                 val_ds,
                 batch_size=1,
                 shuffle=False,
-                num_workers=0,
+                num_workers=self.val_process,
                 pin_memory=True,
             )
         return data_generator, val_data_generator

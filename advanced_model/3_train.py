@@ -318,6 +318,9 @@ class BraTSTrainer(Trainer):
         from model_segmamba.segmamba import SegMamba
 
         self.model = SegMamba()
+        if hasattr(torch, "compile"):
+            print("[*] Compiling model with torch.compile to optimize the pipeline...")
+            self.model = torch.compile(self.model)
 
         self.patch_size = roi_size
         self.best_mean_dice = 0.0

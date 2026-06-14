@@ -170,7 +170,7 @@ class Trainer:
             transform=tr_transforms,
             num_processes=self.train_process,
             num_cached=6,
-            seeds=self.augmenter_seeds,
+            seeds=self.augmenter_seeds[:self.train_process] if self.augmenter_seeds is not None else None,
             pin_memory=True,
             wait_time=0.02,
         )
@@ -189,7 +189,7 @@ class Trainer:
                 transform=val_transforms,
                 num_processes=self.val_process,
                 num_cached=3,
-                seeds=self.augmenter_seeds,
+                seeds=self.augmenter_seeds[:self.val_process] if self.augmenter_seeds is not None else None,
                 pin_memory=True,
                 wait_time=0.02,
             )
