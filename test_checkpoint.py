@@ -39,7 +39,7 @@ from light_training.evaluation.metric import dice, hausdorff_distance_95, jaccar
 # ==============================================================================
 # PASTE YOUR CHECKPOINT PATH HERE
 # ==============================================================================
-CHECKPOINT_PATH = "/home/21013187/BRATS23/BRATS23/enhanted-model/Log/SegMamba/advanced model 128/checkpoints/best_model_hd95_tiebreak_dice0.9017_hd953.0459.pt"
+CHECKPOINT_PATH = "/home/cuc.buithi/BRATS/enhanted-model/Log/SegMamba/P3D/checkpoints/best_model_dice_dice0.9042_hd952.8773.pt"
 DEFAULT_DATA_DIR = os.path.join(BRATS23_DIR, "data", "fullres", "train")
 DEFAULT_SPLIT_JSON = os.path.join(BRATS23_DIR, "brats23_split_70_10_20.json")
 
