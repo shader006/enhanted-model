@@ -1,4 +1,8 @@
 import os
+os.environ["TMPDIR"] = "/tmp"
+import tempfile
+tempfile.tempdir = "/tmp"
+
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 os.environ["TRITON_CACHE_AUTOTUNING"] = "1"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -318,9 +322,10 @@ class BraTSTrainer(Trainer):
         from model_segmamba.segmamba import SegMamba
 
         self.model = SegMamba()
-        if hasattr(torch, "compile"):
-            print("[*] Compiling model with torch.compile to optimize the pipeline...")
-            self.model = torch.compile(self.model)
+        # Disabled torch.compile due to Triton/PyTorch version mismatch in this conda environment
+        # if hasattr(torch, "compile"):
+        #     print("[*] Compiling model with torch.compile to optimize the pipeline...")
+        #     self.model = torch.compile(self.model)
 
         self.patch_size = roi_size
         self.best_mean_dice = 0.0
