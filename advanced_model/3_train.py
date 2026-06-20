@@ -91,11 +91,40 @@ def infer_start_epoch_from_checkpoint(checkpoint_path):
     return 0
 
 
+def infer_best_metrics_from_run(checkpoint_path):
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+    import glob
+    best_files = glob.glob(os.path.join(checkpoint_dir, "best_model_*.pt"))
+    best_dice = 0.0
+    best_hd95 = float("inf")
+    if best_files:
+        filename = os.path.basename(best_files[0])
+        dice_match = re.search(r"dice(\d+\.\d+)", filename)
+        hd95_match = re.search(r"hd95(\d+\.\d+)", filename)
+        if dice_match:
+            best_dice = float(dice_match.group(1))
+        if hd95_match:
+            best_hd95 = float(hd95_match.group(1))
+    return best_dice, best_hd95
+
+
+
 resume_checkpoint_path = parse_resume_checkpoint(sys.argv)
 resume_start_epoch = infer_start_epoch_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else 0
 resume_run_name = infer_run_name_from_checkpoint(resume_checkpoint_path) if resume_checkpoint_path else None
 
-data_dir = "/home/cuc.buithi/BRATS/data/fullres/train"
+# Try multiple fallback paths for data_dir
+default_path = "/home/cuc.buithi/BRATS/data/fullres/train"
+local_workspace_path = os.path.abspath(os.path.join(BRATS23_DIR, "data", "fullres", "train"))
+current_user_path = os.path.expanduser("~/BRATS23/BRATS23/data/fullres/train")
+
+if os.path.exists(local_workspace_path):
+    data_dir = local_workspace_path
+elif os.path.exists(current_user_path):
+    data_dir = current_user_path
+else:
+    data_dir = default_path
+
 split_json_file = os.path.abspath(os.path.join(BASE_DIR, "..", "brats23_split_70_10_20.json"))
 run_name = resume_run_name or settings.SEGMAMBA_WANDB_RUN_NAME or settings.WANDB_RUN_NAME or datetime.now().strftime("segmamba_%Y%m%d_%H%M%S")
 run_root = os.path.join(BRATS23_DIR, "Log", "SegMamba", run_name)
@@ -601,6 +630,14 @@ if __name__ == "__main__":
             print(f"Training will continue from epoch {resume_start_epoch} to {max_epoch - 1}.")
         else:
             print("Checkpoint filename has no epoch number; weights are loaded and training starts at epoch 0.")
+        
+        # Load best metrics of this run so we don't overwrite it with worse metrics
+        best_dice, best_hd95 = infer_best_metrics_from_run(resume_checkpoint_path)
+        if best_dice > 0.0:
+            trainer.best_mean_dice = best_dice
+            trainer.best_mean_hd95 = best_hd95
+            print(f"Loaded existing best metrics from run: Dice={best_dice:.4f}, HD95={best_hd95:.4f}")
+            
         trainer.load_state_dict(resume_checkpoint_path, strict=True)
     trainer.set_wandb_run(init_wandb(experiment_config) if trainer.local_rank == 0 else None)
 
